@@ -1,0 +1,27 @@
+<<<<<<< HEAD
+fastapi
+uvicorn[standard]
+motor
+pymongo
+pydantic
+email-validator
+python-dotenv
+bcrypt
+numpy
+pandas
+scikit-learn
+joblib
+=======
+fastapi
+uvicorn[standard]
+motor
+pymongo
+pydantic
+email-validator
+python-dotenv
+bcrypt
+numpy
+pandas
+scikit-learn
+joblib
+>>>>>>> 0cdfa8de606b21edf74ee60229b71bc2f55291d9
