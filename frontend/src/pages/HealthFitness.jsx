@@ -84,7 +84,7 @@ function HealthFitness(){
                 smokingHabit: payload.smokingHabit,
             };
 
-            const predictionResponse = await fetch('http://localhost:3001/api/predict', {
+            const predictionResponse = await fetch('https://fitguardai.onrender.com/api/predict', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -99,7 +99,7 @@ function HealthFitness(){
             }
 
             // Submit health assessment
-            const response = await fetch('http://localhost:3001/api/health-assessment', {
+            const response = await fetch('https://fitguardai.onrender.com/api/health-assessment', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
