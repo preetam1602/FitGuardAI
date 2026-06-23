@@ -1,0 +1,96 @@
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300&family=Syne:wght@400;600;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #030b0f;
+  --surface: #071218;
+  --panel: #0a1a22;
+  --border: #0e2530;
+  --pulse: #00ffc8;
+  --warn: #ff4d6d;
+  --info: #3d9fff;
+  --muted: #1e3a47;
+  --text: #c8eaf5;
+  --dim: #3a6070;
+  --white: #eaf7ff;
+}
+
+@layer base {
+  body {
+    @apply bg-[var(--bg)] text-[var(--text)];
+    font-family: 'DM Mono', monospace;
+    cursor: default; /* We will use standard cursor or custom in JS */
+  }
+
+  h1, h2, h3, .font-orbitron {
+    font-family: 'Orbitron', sans-serif;
+  }
+
+  .font-syne {
+    font-family: 'Syne', sans-serif;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply px-8 py-3 bg-[var(--pulse)] text-[var(--bg)] font-bold uppercase tracking-widest text-[10px] transition-all duration-300 hover:shadow-[0_0_30px_rgba(0,255,200,0.5)] active:scale-95;
+    font-family: 'Orbitron', sans-serif;
+  }
+
+  .btn-outline {
+    @apply px-8 py-3 bg-transparent text-[var(--text)] border border-[var(--border)] font-bold uppercase tracking-widest text-[10px] transition-all duration-300 hover:border-[var(--pulse)] hover:text-[var(--pulse)] active:scale-95;
+    font-family: 'Orbitron', sans-serif;
+  }
+
+  .glass-panel {
+    @apply bg-[var(--surface)] border border-[var(--border)] backdrop-blur-md;
+  }
+}
+
+/* Animations */
+@keyframes heartbeat {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.6); opacity: 0.6; }
+}
+
+.animate-heartbeat {
+  animation: heartbeat 1.2s ease-in-out infinite;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.animate-blink {
+  animation: blink 1.4s steps(1) infinite;
+}
+
+@keyframes march {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+.animate-march {
+  animation: march 22s linear infinite;
+}
+
+/* Grid & Scanlines */
+.bg-grid {
+  background-image: 
+    linear-gradient(rgba(0, 255, 200, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 255, 200, 0.03) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+.scanline::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(to bottom, transparent 0, transparent 2px, rgba(0,255,200,0.012) 2px, rgba(0,255,200,0.012) 3px);
+  pointer-events: none;
+  z-index: 9990;
+}

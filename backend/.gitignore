@@ -1,0 +1,50 @@
+# =========================
+# Environment & Secrets
+# =========================
+.env
+.env.*
+*.env
+
+# =========================
+# Python Virtual Environments
+# =========================
+venv/
+.venv/
+env/
+ENV/
+
+# =========================
+# Python Caching & Bytecode
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# =========================
+# ML Model Artifacts
+# =========================
+*.pkl
+*.joblib
+*.h5
+*.model
+
+# =========================
+# Pytest / Testing
+# =========================
+.pytest_cache/
+.coverage
+htmlcov/
+
+# =========================
+# Logs
+# =========================
+*.log
+logs/
+
+# =========================
+# Distribution / Packaging
+# =========================
+*.egg-info/
+dist/
+build/

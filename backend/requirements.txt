@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+asyncpg
+groq
+pydantic
+email-validator
+python-dotenv
+bcrypt
+numpy
+pandas
+scikit-learn
+joblib
+PyJWT
+python-multipart
