@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { authService } from '../services/auth';
 
 function AuthModal({ isOpen, onClose, onSubmit }) {
     const [activeTab, setActiveTab] = useState('login');
@@ -29,20 +30,52 @@ function AuthModal({ isOpen, onClose, onSubmit }) {
         }));
     };
 
-    const handleLoginSubmit = (e) => {
+    const handleLoginSubmit = async (e) => {
         e.preventDefault();
-        onSubmit({ type: 'login', data: loginData });
-        onClose();
+        try {
+            const response = await authService.login(loginData.email, loginData.password);
+            authService.setToken(response.access_token);
+            // Pass the plain password so HealthFitness can include it in the health-assessment payload
+            onSubmit({
+                type: 'login',
+                data: {
+                    email: loginData.email,
+                    password: loginData.password,
+                    name: response.user?.name || '',
+                    ...response,
+                },
+            });
+        } catch (error) {
+            alert('Login failed: ' + (error.message || 'Unknown error'));
+        }
     };
 
-    const handleRegisterSubmit = (e) => {
+    const handleRegisterSubmit = async (e) => {
         e.preventDefault();
         if (registerData.password !== registerData.confirmPassword) {
             alert('PROTOCOL_ERROR: Passwords do not match!');
             return;
         }
-        onSubmit({ type: 'register', data: registerData });
-        onClose();
+        try {
+            const response = await authService.register(
+                registerData.name,
+                registerData.email,
+                registerData.password
+            );
+            authService.setToken(response.access_token);
+            // Pass all register fields including the plain password for the health-assessment payload
+            onSubmit({
+                type: 'register',
+                data: {
+                    name: registerData.name,
+                    email: registerData.email,
+                    password: registerData.password,
+                    ...response,
+                },
+            });
+        } catch (error) {
+            alert('Registration failed: ' + (error.message || 'Unknown error'));
+        }
     };
 
     if (!isOpen) return null;

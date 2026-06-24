@@ -4,6 +4,7 @@ import json
 import logging
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse, unquote
 
 from fastapi import FastAPI, HTTPException, status, Request, Depends
 from pydantic import BaseModel, EmailStr
@@ -28,7 +29,18 @@ load_dotenv()
 db_url = os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/postgres")
 if db_url.startswith("postgresql+psycopg://"):
     db_url = db_url.replace("postgresql+psycopg://", "postgresql://", 1)
-PG_URI = os.environ.get("PG_URI", db_url)
+
+# Parse the DB URL into components so we can pass them individually to asyncpg.
+# This is necessary because asyncpg doesn't decode percent-encoded characters in
+# DSN strings — e.g. a password containing '@' encoded as '%40' would break
+# the hostname resolution. Decoding only the password field avoids this.
+_parsed = urlparse(db_url)
+PG_HOST = _parsed.hostname or "localhost"
+PG_PORT = _parsed.port or 5432
+PG_USER = unquote(_parsed.username or "postgres")
+PG_PASS = unquote(_parsed.password or "")
+PG_DB   = (_parsed.path or "/postgres").lstrip("/")
+
 DEBUG = os.environ.get("DEBUG", "false").lower() == "true"
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
@@ -137,7 +149,14 @@ async def generate_diet_blueprint(health_data: dict, prediction_result: dict) ->
 # =========================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    pool = await asyncpg.create_pool(PG_URI)
+    # Use explicit kwargs instead of a DSN string to avoid percent-encoding issues.
+    pool = await asyncpg.create_pool(
+        host=PG_HOST,
+        port=PG_PORT,
+        user=PG_USER,
+        password=PG_PASS,
+        database=PG_DB,
+    )
     dal = FitGuardDAL(pool)
     await dal.create_tables()
     app.state.dal = dal
@@ -344,3 +363,8 @@ async def get_diets_by_user(user_id: int, request: Request, current_user: dict =
         raise HTTPException(status_code=403, detail="Not authorized to access these blueprints")
     blueprints = await dal.get_diet_blueprints_by_user(user_id)
     return blueprints
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 3001))
+    uvicorn.run("server:app", host="0.0.0.0", port=port, reload=DEBUG)

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import AuthModal from '../components/AuthModal';
+import { healthService } from '../services/health';
 
 function HealthFitness() {
     const [formData, setFormData] = useState({
@@ -60,9 +61,10 @@ function HealthFitness() {
     };
 
     const handleAuthSubmit = async (authData) => {
-        // Combine auth data with health data
+        // Combine auth data with health data.
+        // For 'login' flow, the server doesn't return name, so fall back to 'User'.
         const payload = {
-            name: authData.data.name || "Existing User",
+            name: authData.data.name || 'User',
             email: authData.data.email,
             password: authData.data.password,
             age: Number(pendingHealthData.age),
@@ -74,7 +76,7 @@ function HealthFitness() {
             heartRate: parseInt(pendingHealthData.heartRate, 10),
             physicalActivity: pendingHealthData.physicalActivity,
             sleepHours: parseFloat(pendingHealthData.sleepHours),
-            smokingHabit: pendingHealthData.smokingHabit
+            smokingHabit: pendingHealthData.smokingHabit,
         };
 
         setLoading(true);
@@ -83,81 +85,42 @@ function HealthFitness() {
         setActiveTab('bp'); // reset to bp tab before fetching
 
         try {
-            // Get predictions first
-            const predictionPayload = {
-                age: payload.age,
-                gender: payload.gender,
-                height: payload.height,
-                weight: payload.weight,
-                bmi: payload.bmi,
-                bloodPressure: payload.bloodPressure,
-                heartRate: payload.heartRate,
-                physicalActivity: payload.physicalActivity,
-                sleepHours: payload.sleepHours,
-                smokingHabit: payload.smokingHabit,
-            };
+            // /api/health-assessment runs ML prediction + saves data + generates AI diet in one call.
+            // No need to call /api/predict separately.
+            const result = await healthService.submitHealthAssessment(payload);
 
-            const predictionResponse = await fetch('https://fitguardai.onrender.com/api/predict', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(predictionPayload)
-            });
-
-            if (predictionResponse.ok) {
-                const predictionData = await predictionResponse.json();
-                setPrediction(predictionData);
+            // Update prediction & diet blueprint from the consolidated endpoint response
+            if (result.prediction) setPrediction(result.prediction);
+            if (result.diet_blueprint) {
+                setDietBlueprint(result.diet_blueprint);
+                setActiveTab('diet'); // Auto-switch to diet tab
             }
 
-            // Submit health assessment
-            const response = await fetch('https://fitguardai.onrender.com/api/health-assessment', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(payload)
-            });
-
-            if (response.ok) {
-                const result = await response.json();
-                
-                // Update Prediction & Diet Blueprint from new consolidated endpoint
-                if (result.prediction) setPrediction(result.prediction);
-                if (result.diet_blueprint) {
-                    setDietBlueprint(result.diet_blueprint);
-                    setActiveTab('diet'); // Auto-switch to diet tab
-                }
-                
-                // Store JWT token if provided
-                if (result.access_token) {
-                    localStorage.setItem('fitguard_token', result.access_token);
-                }
-
-                alert('Data submitted successfully! ' + (result.message || ''));
-                
-                // Reset form after successful submission
-                setFormData({
-                    age: '',
-                    gender: '',
-                    height: '',
-                    weight: '',
-                    bloodPressure: '',
-                    heartRate: '72',
-                    physicalActivity: '',
-                    sleepHours: '',
-                    smokingHabit: ''
-                });
-                setBmi('');
-                setPendingHealthData(null);
-                setIsAuthModalOpen(false);
-            } else {
-                const errorData = await response.json();
-                setSubmitError('Failed to submit data: ' + JSON.stringify(errorData.detail || errorData || 'Unknown error'));
+            // Store JWT token if provided
+            if (result.access_token) {
+                localStorage.setItem('fitguard_token', result.access_token);
             }
+
+            alert('Data submitted successfully! ' + (result.message || ''));
+
+            // Reset form after successful submission
+            setFormData({
+                age: '',
+                gender: '',
+                height: '',
+                weight: '',
+                bloodPressure: '',
+                heartRate: '72',
+                physicalActivity: '',
+                sleepHours: '',
+                smokingHabit: '',
+            });
+            setBmi('');
+            setPendingHealthData(null);
+            setIsAuthModalOpen(false);
         } catch (error) {
             console.error('Error submitting data:', error);
-            setSubmitError('An error occurred connecting to the server. Please try again.');
+            setSubmitError(error.message || 'An error occurred connecting to the server. Please try again.');
         } finally {
             setLoading(false);
         }
