@@ -1,70 +1,84 @@
-# FitGuard AI — Neural Health Intelligence System
+<div align="center">
 
-> **"Predict Today. Prevent Tomorrow."**
+# FitGuard AI
+### Neural Health Intelligence Platform
 
-FitGuard AI is a high-performance, medical-grade predictive platform designed to revolutionize preventive healthcare. By fusing real-time biometric data with advanced neural intelligence and LLM-driven medical personalization, the system identifies early health risk markers and generates tailored physiological and nutritional protocols.
+**Predict Today. Prevent Tomorrow.**
 
-![Design Aesthetic](https://img.shields.io/badge/Aesthetic-Cyberpunk_HUD-00ffc8?style=for-the-badge)
-![Status](https://img.shields.io/badge/System-Active-00ffc8?style=for-the-badge)
+[![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)](#)
+[![FastAPI](https://img.shields.io/badge/FastAPI-Async-009688?logo=fastapi&logoColor=white)](#)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-asyncpg-4169E1?logo=postgresql&logoColor=white)](#)
+[![Groq](https://img.shields.io/badge/LLM-Groq%20Llama%203.3-F55036)](#)
+[![License](https://img.shields.io/badge/License-MIT-lightgrey)](#)
 
----
-
-## ⚡ Core Intelligence Modules
-
-### 01. Biometric Fusion
-Real-time integration of physiological data streams, including heart rate, blood pressure trends, age, height, weight, physical activity, sleep, and smoking habits.
-
-### 02. Neural Risk Prediction
-Proprietary machine learning models trained to predict blood pressure trends, risk levels, and output structured cardiovascular and lifestyle recommendations.
-
-### 03. AI Diet Blueprint (Groq)
-Generates highly customized dietary guidelines, macronutrient targets, full meal plans, supplements, foods to avoid, and weekly habit tips powered by Groq Llama 3.3.
-
-### 04. JWT Authentication
-Secure JSON Web Token (JWT) system using `HS256` encryption to restrict access to user profile history and diet blueprints.
+</div>
 
 ---
 
-## 🎨 Design Philosophy: Cyberpunk HUD
+## Overview
 
-The platform utilizes a **Cyberpunk Health HUD** aesthetic, designed to evoke the feeling of a professional medical terminal.
+**FitGuard AI** is a predictive health-analytics platform that fuses real-time biometric data with machine learning and large language models to surface early cardiovascular and lifestyle risk indicators, and to generate personalized, evidence-informed nutrition and habit protocols.
 
-- **Palette**: Deep Space Background (`#030b0f`) with high-contrast Cyan Pulse highlights (`#00ffc8`).
-- **Typography**: 
-    - **Orbitron**: Used for headers and critical data readouts.
-    - **DM Mono**: Used for clinical labels and technical descriptions.
-- **Visual Effects**: 
-    - **Scanlines & Grids**: Global CRT-style overlays for an immersive terminal experience.
-    - **Glassmorphism**: Translucent panels with backdrop blurring for a premium, multi-layered feel.
-    - **Heartbeat Animations**: Real-time pulsing indicators for system status and biometric data.
+The system is built for developers and health-tech teams who need a production-grade reference architecture combining a modern async backend, an ML inference layer, and LLM-driven personalization — wrapped in a distinctive, high-contrast "medical terminal" interface.
+
+> **Disclaimer:** FitGuard AI is a technology demonstration and decision-support tool. It is **not** a certified medical device and does not provide medical diagnoses. Outputs should not replace professional clinical judgment. Always consult a licensed healthcare provider before making health decisions.
 
 ---
 
-## 🛠 Technology Stack
+## Core Intelligence Modules
 
-### Frontend
-- **React 18** + **Vite**: Blazing-fast interface with optimized production builds.
-- **Vanilla CSS Variables & CSS Modules**: Custom design system for the Cyberpunk theme.
-- **React Router**: Navigation between diagnostics.
-
-### Backend
-- **FastAPI**: Asynchronous Python framework for high-concurrency data processing.
-- **PostgreSQL (`asyncpg`)**: High-performance asynchronous database storage replacing MongoDB.
-- **Groq API**: LLM pipeline for dietary optimization.
-- **Machine Learning**: Scikit-learn based predictive models for health risk assessment.
-- **JWT Auth**: PyJWT & bcrypt for cryptography.
+| Module | Description |
+|---|---|
+| **01 · Biometric Fusion** | Real-time ingestion and normalization of physiological signals — heart rate, blood pressure trends, age, height, weight, activity level, sleep, and smoking status. |
+| **02 · Neural Risk Prediction** | Scikit-learn models trained to project blood pressure trajectories and output structured, tiered cardiovascular and lifestyle risk assessments. |
+| **03 · AI Diet Blueprint** | Groq-hosted Llama 3.3 generates individualized macronutrient targets, structured meal plans, supplement guidance, foods to avoid, and weekly habit-formation tips. |
+| **04 · Secure Access Layer** | JWT (HS256) authentication with bcrypt password hashing, enforcing strict per-user data isolation across profile history and diet blueprint endpoints. |
 
 ---
 
-## 🚀 System Initialization
+## Design Philosophy — Cyberpunk Health HUD
+
+The interface is designed to evoke a professional diagnostic terminal: precise, high-signal, and immersive.
+
+- **Palette** — Deep-space background (`#030b0f`) paired with high-contrast cyan-pulse accents (`#00ffc8`) for critical readouts and status indicators.
+- **Typography** — *Orbitron* for headers and primary data readouts; *DM Mono* for clinical labels and technical annotations.
+- **Visual System**
+  - CRT-style scanline and grid overlays for terminal-grade immersion
+  - Glassmorphic panels with backdrop blur for a layered, premium feel
+  - Real-time heartbeat-pulse animations tied to system and biometric status
+
+---
+
+## Technology Stack
+
+**Frontend**
+- React 18 + Vite — optimized dev experience and production builds
+- CSS Modules with a custom CSS-variable design system
+- React Router — navigation across diagnostic views
+
+**Backend**
+- FastAPI — asynchronous Python framework for high-concurrency workloads
+- PostgreSQL via `asyncpg` — high-performance async data layer
+- Groq API — LLM inference pipeline for dietary personalization
+- Scikit-learn — trained models for health risk assessment
+- PyJWT + bcrypt — authentication and credential security
+
+---
+
+## Getting Started
 
 ### Prerequisites
-- Node.js (v18+)
-- Python (3.9+)
-- PostgreSQL Database
 
-### Configuration
-Create a `.env` file inside the `backend/` directory:
+| Requirement | Version |
+|---|---|
+| Node.js | ≥ 18 |
+| Python | ≥ 3.9 |
+| PostgreSQL | Any recent stable release |
+
+### Environment Configuration
+
+Create a `.env` file inside `backend/`:
+
 ```env
 DATABASE_URL=postgresql://<username>:<password>@localhost:5432/<database_name>
 GROQ_API_KEY=your_groq_api_key_here
@@ -76,33 +90,61 @@ DEBUG=false
 FRONTEND_URL=http://localhost:5173/
 ```
 
+> Never commit `.env` files. Rotate `SECRET_KEY` and `GROQ_API_KEY` for each environment (dev / staging / production).
+
 ### Backend Setup
-1. Navigate to the backend directory and install dependencies:
-   ```bash
-   cd backend
-   pip install -r requirements.txt
-   ```
-2. Start the development server using Uvicorn (pointing to `src` directory):
-   ```bash
-   python -m uvicorn server:app --app-dir src --reload
-   ```
+
+```bash
+cd backend
+pip install -r requirements.txt
+python -m uvicorn server:app --app-dir src --reload
+```
 
 ### Frontend Setup
-1. Navigate to the frontend directory and install dependencies:
-   ```bash
-   cd frontend
-   npm install
-   ```
-2. Start the development server:
-   ```bash
-   npm run dev
-   ```
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+The frontend will be available at `http://localhost:5173`, and the API at `http://localhost:3001`.
 
 ---
 
-## 🔒 Security & Privacy
-FitGuard AI implements a **Privacy First** protocol. All biometric data transmission is encrypted, passwords are hashed using bcrypt, and user-associated endpoints are secured using JSON Web Tokens (JWT) to ensure strict data isolation.
+## Security & Privacy
+
+FitGuard AI follows a **privacy-first** design posture:
+
+- All biometric data in transit is encrypted
+- Passwords are hashed with **bcrypt** — never stored in plaintext
+- All user-associated endpoints require a valid **JWT**, enforcing strict data isolation between accounts
+- Diet blueprints and risk history are scoped exclusively to the authenticated user
 
 ---
 
-© 2026 FitGuard AI · Global Health Intelligence System
+## Roadmap
+
+- [ ] Wearable device integrations (Apple Health, Fitbit, Garmin)
+- [ ] Longitudinal risk trend visualization
+- [ ] Multi-language diet blueprint generation
+- [ ] Clinician-facing dashboard and export (PDF/HL7)
+- [ ] Role-based access control for care-team accounts
+
+---
+
+## Contributing
+
+Contributions are welcome. Please open an issue to discuss significant changes before submitting a pull request, and ensure new features include appropriate tests and documentation updates.
+
+## License
+
+Distributed under the MIT License. See `LICENSE` for details.
+
+---
+
+<div align="center">
+
+**© 2026 FitGuard AI · Global Health Intelligence System**
+
+</div>
