@@ -1,5 +1,6 @@
 import os
 import sys
+import asyncio
 import json
 import logging
 from datetime import datetime, timedelta
@@ -18,6 +19,7 @@ import jwt
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 
 from dal import FitGuardDAL
+from rag import generate_rag_diet_blueprint, get_retriever
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +45,12 @@ PG_DB   = (_parsed.path or "/postgres").lstrip("/")
 
 DEBUG = os.environ.get("DEBUG", "false").lower() == "true"
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get("ALLOWED_ORIGINS", FRONTEND_URL).split(",")
+    if origin.strip()
+]
 
 SECRET_KEY = os.environ.get("SECRET_KEY", "fallback_secret_key")
 ALGORITHM = os.environ.get("ALGORITHM", "HS256")
@@ -99,47 +107,20 @@ async def get_current_user(request: Request, token: str = Depends(oauth2_scheme)
 # =========================
 # GROQ INTEGRATION
 # =========================
+_groq_client: Optional[AsyncGroq] = None
+
 async def generate_diet_blueprint(health_data: dict, prediction_result: dict) -> dict:
+    """Diet blueprint grounded in the dietary-guideline knowledge base (see src/rag)."""
+    global _groq_client
     if not GROQ_API_KEY:
         raise ValueError("GROQ_API_KEY not set in environment")
-    
-    client = AsyncGroq(api_key=GROQ_API_KEY)
-    prompt = f"""
-    You are an expert AI nutritionist. Based on the following health data and ML predictions, generate a detailed diet blueprint.
-    Output ONLY valid JSON matching this structure:
-    {{
-      "diet_type": "DASH Diet",
-      "diet_reason": "Ideal for lowering blood pressure and improving heart health",
-      "macros": {{"protein": "150g", "carbs": "200g", "fat": "60g", "calories": "2000", "fiber": "35g"}},
-      "meal_plan": [
-        {{"meal": "Breakfast", "description": "Oatmeal with whey"}},
-        {{"meal": "Lunch", "description": "Chicken and rice"}}
-      ],
-      "foods_to_avoid": ["Sugar", "Fried food"],
-      "supplements": [
-        {{"name": "Vitamin D", "dose": "2000 IU", "reason": "Bone health"}}
-      ],
-      "weekly_habit_tip": "Drink at least 3 liters of water a day."
-    }}
 
-    Health Data:
-    {json.dumps(health_data, indent=2)}
-
-    Prediction Result:
-    {json.dumps(prediction_result, indent=2)}
-    """
-
+    # Reused across requests: building a client costs ~400 ms (SSL context) and drops warm connections
+    if _groq_client is None:
+        _groq_client = AsyncGroq(api_key=GROQ_API_KEY)
+    client = _groq_client
     try:
-        completion = await client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": "You are a helpful expert nutritionist that only outputs valid JSON."},
-                {"role": "user", "content": prompt}
-            ],
-            response_format={"type": "json_object"}
-        )
-        response_content = completion.choices[0].message.content
-        return json.loads(response_content)
+        return await generate_rag_diet_blueprint(client, health_data, prediction_result)
     except Exception as e:
         logger.error(f"Groq API error: {e}")
         raise e
@@ -160,6 +141,8 @@ async def lifespan(app: FastAPI):
     dal = FitGuardDAL(pool)
     await dal.create_tables()
     app.state.dal = dal
+    # Load/build the RAG index in the background so startup isn't blocked
+    asyncio.create_task(asyncio.to_thread(get_retriever))
     yield
     await pool.close()
 
@@ -170,7 +153,7 @@ app = FastAPI(lifespan=lifespan, debug=DEBUG)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -263,6 +246,23 @@ async def login_for_access_token(request: Request, form_data: OAuth2PasswordRequ
     )
     return {"access_token": access_token, "token_type": "bearer"}
 
+@app.post("/api/token/refresh")
+async def refresh_access_token(current_user: dict = Depends(get_current_user)):
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": current_user["email"], "user_id": current_user["id"]},
+        expires_delta=access_token_expires,
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@app.get("/api/users/me")
+async def get_current_user_profile(current_user: dict = Depends(get_current_user)):
+    return {
+        "id": current_user["id"],
+        "name": current_user["name"],
+        "email": current_user["email"],
+    }
+
 @app.post("/api/predict", response_model=PredictionResponse)
 async def get_prediction(payload: dict):
     try:
@@ -345,6 +345,41 @@ async def submit_health_assessment(payload: HealthAssessmentRequest, request: Re
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
+
+class DietRecommendationRequest(BaseModel):
+    age: int
+    gender: str
+    height: float
+    weight: float
+    bmi: float
+    bloodPressure: str
+    heartRate: int
+    physicalActivity: str
+    sleepHours: float
+    smokingHabit: str
+
+@app.post("/api/diet/recommend")
+async def recommend_diet(payload: DietRecommendationRequest):
+    """ML prediction + RAG-grounded diet blueprint, without creating a user or saving records."""
+    input_data = payload.dict()
+    try:
+        predicted_bp = predict_bp(input_data)
+        prediction_result = get_recommendations(predicted_bp)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Prediction error: {str(e)}")
+    try:
+        diet_blueprint = await generate_diet_blueprint(input_data, prediction_result)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Diet generation failed: {str(e)}")
+    return {"prediction": prediction_result, "diet_blueprint": diet_blueprint}
+
+@app.get("/api/rag/status")
+async def rag_status():
+    retriever = await asyncio.to_thread(get_retriever, False)
+    if retriever is None:
+        return {"ready": False, "chunks": 0}
+    sources = sorted({c["source"] for c in retriever.chunks})
+    return {"ready": True, "chunks": len(retriever.chunks), "sources": sources}
 
 @app.get("/api/records/{record_id}/diet")
 async def get_diet_by_record(record_id: int, request: Request, current_user: dict = Depends(get_current_user)):

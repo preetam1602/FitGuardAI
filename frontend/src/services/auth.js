@@ -35,7 +35,7 @@ export const authService = {
     if (!token) return null;
 
     try {
-      const response = await apiService.post('/api/token', { token });
+      const response = await apiService.post('/api/token/refresh', {});
       this.setToken(response.access_token);
       return response.access_token;
     } catch (error) {

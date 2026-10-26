@@ -60,3 +60,6 @@ desktop.ini
 *.njsproj
 *.sln
 *.sw?
+
+# Local data (not committed)
+/data/

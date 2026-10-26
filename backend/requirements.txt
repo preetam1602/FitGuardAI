@@ -12,3 +12,5 @@ scikit-learn
 joblib
 PyJWT
 python-multipart
+pypdf
+fastembed

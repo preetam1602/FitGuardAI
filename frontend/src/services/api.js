@@ -41,6 +41,11 @@ class ApiService {
       if (error.name === 'AbortError') {
         throw new Error('Request timeout');
       }
+      if (error instanceof TypeError) {
+        throw new Error(
+          'Unable to connect to the server. Make sure the backend is running on port 3001.'
+        );
+      }
       throw error;
     }
   }

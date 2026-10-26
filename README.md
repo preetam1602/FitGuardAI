@@ -82,10 +82,22 @@ FRONTEND_URL=http://localhost:5173/
    cd backend
    pip install -r requirements.txt
    ```
-2. Start the development server using Uvicorn (pointing to `src` directory):
+2. Copy the example env file and configure your database + API keys:
    ```bash
-   python -m uvicorn server:app --app-dir src --reload
+   cp .env.example .env   # Windows: copy .env.example .env
    ```
+3. Start the development server on **port 3001** (must match the Vite proxy in `frontend/vite.config.js`):
+   ```bash
+   python -m uvicorn server:app --app-dir src --reload --port 3001
+   ```
+   Or on Windows:
+   ```powershell
+   .\start.ps1
+   ```
+   > **Note:** The ML model is auto-trained on first request if `health_recommendation/models/` is missing. You can also train manually:
+   > ```bash
+   > cd health_recommendation && python -m src.train
+   > ```
 
 ### Frontend Setup
 1. Navigate to the frontend directory and install dependencies:
@@ -93,10 +105,12 @@ FRONTEND_URL=http://localhost:5173/
    cd frontend
    npm install
    ```
-2. Start the development server:
+2. (Optional) Copy `frontend/.env.example` to `.env` if you need a custom API URL for production builds.
+3. Start the development server:
    ```bash
    npm run dev
    ```
+   The frontend runs on **http://localhost:5173** and proxies `/api/*` requests to the backend at **http://localhost:3001**.
 
 ---
 
@@ -106,3 +120,33 @@ FitGuard AI implements a **Privacy First** protocol. All biometric data transmis
 ---
 
 © 2026 FitGuard AI · Global Health Intelligence System
+
+---
+
+## 📚 Self-RAG Diet Pipeline
+
+Diet blueprints are grounded in the documents placed in the git-ignored `data/` folder (e.g. `DGI_2024.pdf`, ICMR-NIN Dietary Guidelines for Indians). Code lives in `backend/src/rag/`. It adapts [Self-RAG](https://arxiv.org/abs/2310.11511) with prompted critics, keeping only the parts that don't hurt latency.
+
+| Stage | What runs | Cost |
+|---|---|---|
+| **Retrieve** | Profile → ~9 focused queries. Dense (`bge-small-en-v1.5`) + BM25, fused with **RRF**. Round-robin pick so each concern is covered. | ~0.7–1 s |
+| **Rerank** (conditional) | Cross-encoder (`ms-marco-MiniLM-L-6-v2`) **only** for queries where dense and BM25 disagree on the top hit; max 6 pairs / 1 s budget. | 0–0.5 s |
+| **IsRel** | Reranker score if reranked, else dense score — no LLM call. | ~0 |
+| **Generate** | Groq `GROQ_MODEL` (default `openai/gpt-oss-120b`) with cited `[n]` excerpts. If rate-limited, falls back to `GROQ_FALLBACK_MODEL` immediately instead of waiting. | ~3.5 s |
+| **IsSup + IsUse** | One batched critic call on `CRITIC_MODEL` (`openai/gpt-oss-20b`, separate rate-limit bucket), 5 s timeout, no retries — on failure the blueprint is returned unverified. | ~0.8 s |
+| **Correct** | Regenerate once with critic feedback **only** if unsupported (`no`) or usefulness < 3. | rare |
+
+Skipped on purpose: the *Retrieve* critic (a diet plan always needs evidence) and beam search (multiplies generation calls).
+
+The blueprint keeps its original fields and adds `guideline_notes`, `sources` (page refs, scores), `rag_grounded` and `self_rag` (critic verdict, regenerations, model used, per-stage `timings_ms`).
+
+```bash
+cd backend/src
+python -m rag.ingest          # build index (auto-built at server startup if missing; --force to rebuild)
+```
+
+Endpoints: `POST /api/diet/recommend` (health data → prediction + grounded blueprint, no account needed), `GET /api/rag/status`. `/api/health-assessment` uses the same pipeline.
+
+Toggles (env): `RAG_RERANK`, `SELF_RAG_CRITIC`, `SELF_RAG_MAX_RETRIES`, `CRITIC_TIMEOUT_S`, `RAG_RERANK_MAX_PAIRS`, `RAG_RERANK_BUDGET_MS`.
+
+> Groq's free tier allows ~8k tokens/min per model and one blueprint uses ~5k, so expect ~1 blueprint/minute before requests start waiting on the quota.
