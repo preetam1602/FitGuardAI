@@ -81,8 +81,13 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
+# bcrypt is deliberately slow (~0.2-0.3 s); run it in a thread so it doesn't block the event loop
+async def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return await asyncio.to_thread(bcrypt.checkpw, plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
+
+async def hash_password(password: str) -> str:
+    hashed = await asyncio.to_thread(bcrypt.hashpw, password.encode('utf-8'), bcrypt.gensalt())
+    return hashed.decode('utf-8')
 
 async def get_current_user(request: Request, token: str = Depends(oauth2_scheme)):
     credentials_exception = HTTPException(
@@ -211,7 +216,7 @@ async def register(payload: RegisterRequest, request: Request):
     if user:
         raise HTTPException(status_code=400, detail="Email already registered")
         
-    hashed_password = bcrypt.hashpw(payload.password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    hashed_password = await hash_password(payload.password)
     user_id = await dal.create_user(payload.name, payload.email, hashed_password)
     
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -224,7 +229,7 @@ async def register(payload: RegisterRequest, request: Request):
 async def login(payload: LoginRequest, request: Request):
     dal: FitGuardDAL = request.app.state.dal
     user = await dal.get_user_by_email(payload.email)
-    if not user or not verify_password(payload.password, user["password"]):
+    if not user or not await verify_password(payload.password, user["password"]):
         raise HTTPException(status_code=401, detail="Incorrect email or password")
         
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -237,7 +242,7 @@ async def login(payload: LoginRequest, request: Request):
 async def login_for_access_token(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
     dal: FitGuardDAL = request.app.state.dal
     user = await dal.get_user_by_email(form_data.username)
-    if not user or not verify_password(form_data.password, user["password"]):
+    if not user or not await verify_password(form_data.password, user["password"]):
         raise HTTPException(status_code=401, detail="Incorrect email or password")
         
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -288,10 +293,10 @@ async def submit_health_assessment(payload: HealthAssessmentRequest, request: Re
         # 2. Database save: ensure user exists and verify password
         user = await dal.get_user_by_email(payload.email)
         if not user:
-            hashed_password = bcrypt.hashpw(payload.password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+            hashed_password = await hash_password(payload.password)
             user_id = await dal.create_user(payload.name, payload.email, hashed_password)
         else:
-            if not verify_password(payload.password, user["password"]):
+            if not await verify_password(payload.password, user["password"]):
                 raise HTTPException(status_code=401, detail="Incorrect password for existing user")
             user_id = user["id"]
             

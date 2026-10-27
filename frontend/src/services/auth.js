@@ -1,5 +1,8 @@
 import { apiService } from './api';
 
+// Fired on window whenever the stored token changes, so components like Navbar can re-check auth
+export const AUTH_CHANGED_EVENT = 'fitguard-auth-changed';
+
 export const authService = {
   async login(email, password) {
     return apiService.post('/api/login', { email, password });
@@ -28,6 +31,7 @@ export const authService = {
 
   setToken(token) {
     localStorage.setItem('fitguard_token', token);
+    window.dispatchEvent(new Event(AUTH_CHANGED_EVENT));
   },
 
   async refreshToken() {

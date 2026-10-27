@@ -1,12 +1,15 @@
 import { useState, useEffect } from 'react';
 import { NavLink } from "react-router-dom";
-import { authService } from '../services/auth';
+import { authService, AUTH_CHANGED_EVENT } from '../services/auth';
 
 function Navbar({ onOpenAuthModal }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
 
   useEffect(() => {
-    setIsAuthenticated(authService.isAuthenticated());
+    const syncAuth = () => setIsAuthenticated(authService.isAuthenticated());
+    syncAuth();
+    window.addEventListener(AUTH_CHANGED_EVENT, syncAuth);
+    return () => window.removeEventListener(AUTH_CHANGED_EVENT, syncAuth);
   }, []);
 
   const handleLogout = () => {

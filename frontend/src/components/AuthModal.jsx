@@ -3,6 +3,7 @@ import { authService } from '../services/auth';
 
 function AuthModal({ isOpen, onClose, onSubmit }) {
     const [activeTab, setActiveTab] = useState('login');
+    const [submitting, setSubmitting] = useState(false);
     const [loginData, setLoginData] = useState({
         email: '',
         password: ''
@@ -32,6 +33,8 @@ function AuthModal({ isOpen, onClose, onSubmit }) {
 
     const handleLoginSubmit = async (e) => {
         e.preventDefault();
+        if (submitting) return;
+        setSubmitting(true);
         try {
             const response = await authService.login(loginData.email, loginData.password);
             authService.setToken(response.access_token);
@@ -47,6 +50,8 @@ function AuthModal({ isOpen, onClose, onSubmit }) {
             });
         } catch (error) {
             alert('Login failed: ' + (error.message || 'Unknown error'));
+        } finally {
+            setSubmitting(false);
         }
     };
 
@@ -56,6 +61,8 @@ function AuthModal({ isOpen, onClose, onSubmit }) {
             alert('PROTOCOL_ERROR: Passwords do not match!');
             return;
         }
+        if (submitting) return;
+        setSubmitting(true);
         try {
             const response = await authService.register(
                 registerData.name,
@@ -75,6 +82,8 @@ function AuthModal({ isOpen, onClose, onSubmit }) {
             });
         } catch (error) {
             alert('Registration failed: ' + (error.message || 'Unknown error'));
+        } finally {
+            setSubmitting(false);
         }
     };
 
@@ -166,9 +175,10 @@ function AuthModal({ isOpen, onClose, onSubmit }) {
                                 <div className="pt-4 flex flex-col gap-4">
                                     <button
                                         type="submit"
-                                        className="btn-primary w-full"
+                                        disabled={submitting}
+                                        className="btn-primary w-full disabled:opacity-50 disabled:cursor-wait"
                                     >
-                                        INITIALIZE_SESSION
+                                        {submitting ? 'AUTHENTICATING...' : 'INITIALIZE_SESSION'}
                                     </button>
                                     <div className="text-[8px] uppercase tracking-[2px] text-[var(--dim)] text-center">
                                         Neural link established — Encrypted
@@ -238,9 +248,10 @@ function AuthModal({ isOpen, onClose, onSubmit }) {
                                 <div className="pt-4 flex flex-col gap-4">
                                     <button
                                         type="submit"
-                                        className="btn-primary w-full"
+                                        disabled={submitting}
+                                        className="btn-primary w-full disabled:opacity-50 disabled:cursor-wait"
                                     >
-                                        CREATE_PROTOCOL
+                                        {submitting ? 'CREATING_PROFILE...' : 'CREATE_PROTOCOL'}
                                     </button>
                                     <div className="text-[8px] uppercase tracking-[2px] text-[var(--dim)] text-center">
                                         Joining FitGuard Neural Network

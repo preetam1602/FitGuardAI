@@ -79,6 +79,9 @@ function HealthFitness() {
             smokingHabit: pendingHealthData.smokingHabit,
         };
 
+        // Login/register already succeeded: close the modal now and show progress on the
+        // EXECUTE DIAGNOSTIC button while the diet blueprint is generated (5-15 s)
+        setIsAuthModalOpen(false);
         setLoading(true);
         setSubmitError(null);
         setDietBlueprint(null);
@@ -117,7 +120,6 @@ function HealthFitness() {
             });
             setBmi('');
             setPendingHealthData(null);
-            setIsAuthModalOpen(false);
         } catch (error) {
             console.error('Error submitting data:', error);
             setSubmitError(error.message || 'An error occurred connecting to the server. Please try again.');

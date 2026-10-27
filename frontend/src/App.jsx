@@ -18,8 +18,9 @@ function App(){
     setIsAuthModalOpen(false);
   };
 
-  const handleAuthSubmit = (authData) => {
-    console.log("Navbar Authentication Data:", authData);
+  const handleAuthSubmit = () => {
+    // Token is already stored by AuthModal; Navbar updates via the auth-changed event
+    setIsAuthModalOpen(false);
   };
 
   return (
