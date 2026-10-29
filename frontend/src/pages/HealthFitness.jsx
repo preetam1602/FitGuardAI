@@ -81,9 +81,10 @@ function HealthFitness() {
         }));
     };
 
-    const handleSubmit = (e) => {
+    const handleSubmit = async (e) => {
         e.preventDefault();
         const healthDataWithBMI = { ...formData, bmi };
+        await authService.restoreSession(); // a returning user may still be logged in via the refresh cookie
         if (authService.isAuthenticated()) {
             submitAssessment(healthDataWithBMI);
         } else {
@@ -143,8 +144,8 @@ function HealthFitness() {
             setPendingHealthData(null);
         } catch (error) {
             if (error.status === 401) {
-                // Token missing or expired: drop it and ask the user to log in again, keeping their inputs
-                authService.clearToken();
+                // Session ended (the API client already tried a refresh): log in again, keeping the inputs
+                authService.clearSession();
                 setPendingHealthData(healthData);
                 setIsAuthModalOpen(true);
                 return;

@@ -142,7 +142,7 @@ cd backend/src
 python -m rag.ingest          # build index (auto-built at server startup if missing; --force to rebuild)
 ```
 
-Endpoints: `POST /api/diet/recommend` (health data → prediction + grounded blueprint, no account needed), `GET /api/rag/status`. `/api/health-assessment` uses the same pipeline.
+Endpoints: `POST /api/diet/recommend` (health data → prediction + grounded blueprint, no account needed; limited to 3 per hour per IP), `GET /api/rag/status`. `/api/health-assessment` uses the same pipeline.
 
 Toggles (env): `RAG_RERANK`, `SELF_RAG_CRITIC`, `SELF_RAG_MAX_RETRIES`, `CRITIC_TIMEOUT_S`, `RAG_RERANK_MAX_PAIRS`, `RAG_RERANK_BUDGET_MS`.
 

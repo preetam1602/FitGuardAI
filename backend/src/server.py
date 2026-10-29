@@ -1,17 +1,20 @@
 import os
 import sys
 import asyncio
+import hashlib
 import json
 import logging
+import math
+import secrets
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 from urllib.parse import urlparse, unquote
 
-from fastapi import FastAPI, HTTPException, status, Request, Depends
+from fastapi import FastAPI, HTTPException, status, Request, Response, Depends
 from pydantic import BaseModel, EmailStr, Field, field_validator
 import bcrypt
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from dotenv import load_dotenv
 from typing import Optional, Any
 import asyncpg
@@ -20,6 +23,7 @@ import jwt
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 
 from dal import FitGuardDAL
+from rate_limit import SlidingWindowLimiter
 from rag import generate_rag_diet_blueprint, get_retriever
 
 logger = logging.getLogger(__name__)
@@ -53,15 +57,34 @@ ALLOWED_ORIGINS = [
     if origin.strip()
 ]
 
-# No default: a guessable fallback would let anyone forge JWTs
-SECRET_KEY = os.environ.get("SECRET_KEY")
-if not SECRET_KEY:
+# No default: a guessable key (or the .env.example placeholder) would let anyone forge JWTs
+SECRET_KEY = os.environ.get("SECRET_KEY", "")
+if len(SECRET_KEY) < 32 or SECRET_KEY == "your_jwt_secret_key_here":
     raise RuntimeError(
-        "SECRET_KEY is not set. Add it to backend/.env; generate one with: "
-        "python -c \"import secrets; print(secrets.token_urlsafe(48))\""
+        "SECRET_KEY must be set to a random value of at least 32 characters in backend/.env; "
+        "generate one with: python -c \"import secrets; print(secrets.token_urlsafe(48))\""
     )
 ALGORITHM = os.environ.get("ALGORITHM", "HS256")
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
+# Access tokens live only in the browser's memory and are short-lived; the long-lived refresh
+# token sits in an httpOnly cookie that page scripts (and so XSS) can't read
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "15"))
+REFRESH_TOKEN_EXPIRE_DAYS = int(os.environ.get("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
+REFRESH_COOKIE_NAME = "fitguard_refresh"
+REFRESH_COOKIE_PATH = "/api/auth"  # the browser sends the cookie to the refresh/logout endpoints only
+# Browsers accept Secure cookies on http://localhost, so this only needs to be false for plain-HTTP non-localhost hosts
+COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "true").lower() == "true"
+
+# Brute-force protection for the auth endpoints
+LOGIN_WINDOW_S = int(os.environ.get("LOGIN_WINDOW_S", "900"))                       # 15 min
+LOGIN_MAX_ATTEMPTS_PER_EMAIL = int(os.environ.get("LOGIN_MAX_ATTEMPTS_PER_EMAIL", "5"))
+LOGIN_MAX_ATTEMPTS_PER_IP = int(os.environ.get("LOGIN_MAX_ATTEMPTS_PER_IP", "20"))
+REGISTER_WINDOW_S = int(os.environ.get("REGISTER_WINDOW_S", "3600"))                # 1 h
+REGISTER_MAX_PER_IP = int(os.environ.get("REGISTER_MAX_PER_IP", "5"))
+
+# Each diet blueprint costs several LLM calls, so cap how often one user / IP can trigger them
+DIET_WINDOW_S = int(os.environ.get("DIET_WINDOW_S", "3600"))                        # 1 h
+DIET_MAX_PER_USER = int(os.environ.get("DIET_MAX_PER_USER", "10"))
+DIET_MAX_PER_IP_ANONYMOUS = int(os.environ.get("DIET_MAX_PER_IP_ANONYMOUS", "3"))
 
 # =========================
 # FIX ML PATH
@@ -81,6 +104,26 @@ def run_assessment(health_data: dict) -> dict:
     return assessment
 
 # =========================
+# ERROR RESPONSES
+# =========================
+# Exception text can expose SQL, file paths or upstream API details, so it is logged
+# server-side and clients only get a generic message.
+def internal_error(message: str, status_code: int = status.HTTP_500_INTERNAL_SERVER_ERROR) -> HTTPException:
+    """Log the exception currently being handled (with traceback) and build a generic error response."""
+    logger.exception(message)
+    return HTTPException(status_code=status_code, detail=f"{message}. Please try again.")
+
+def assess_or_422(health_data: dict) -> dict:
+    try:
+        return run_assessment(health_data)
+    except ValueError as e:
+        # risk.py raises ValueError only for invalid inputs, with messages written for the user.
+        # Kept narrow on purpose: asyncpg's DataError is also a ValueError and must not leak.
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
+    except Exception:
+        raise internal_error("Could not compute the risk assessment")
+
+# =========================
 # JWT UTILS
 # =========================
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/token")
@@ -97,7 +140,14 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
 
 # bcrypt is deliberately slow (~0.2-0.3 s); run it in a thread so it doesn't block the event loop
 async def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return await asyncio.to_thread(bcrypt.checkpw, plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
+    password = plain_password.encode('utf-8')
+    if len(password) > 72:
+        return False  # can't match: registration rejects passwords longer than bcrypt's 72-byte limit
+    return await asyncio.to_thread(bcrypt.checkpw, password, hashed_password.encode('utf-8'))
+
+# Checked against when the email is unknown, so a missing account takes as long as a wrong
+# password and response timing doesn't reveal which emails are registered
+_DUMMY_PASSWORD_HASH = bcrypt.hashpw(secrets.token_bytes(16), bcrypt.gensalt()).decode('utf-8')
 
 async def hash_password(password: str) -> str:
     hashed = await asyncio.to_thread(bcrypt.hashpw, password.encode('utf-8'), bcrypt.gensalt())
@@ -137,12 +187,8 @@ async def generate_diet_blueprint(health_data: dict, prediction_result: dict, **
     # Reused across requests: building a client costs ~400 ms (SSL context) and drops warm connections
     if _groq_client is None:
         _groq_client = AsyncGroq(api_key=GROQ_API_KEY)
-    client = _groq_client
-    try:
-        return await generate_rag_diet_blueprint(client, health_data, prediction_result, **kwargs)
-    except Exception as e:
-        logger.error(f"Groq API error: {e}")
-        raise e
+    # Callers log failures with a traceback and decide what the client sees
+    return await generate_rag_diet_blueprint(_groq_client, health_data, prediction_result, **kwargs)
 
 # =========================
 # DATABASE LIFESPAN
@@ -182,9 +228,25 @@ app.add_middleware(
 # MODELS
 # =========================
 class RegisterRequest(BaseModel):
-    name: str
+    name: str = Field(min_length=1, max_length=100)
     email: EmailStr
-    password: str
+    password: str = Field(min_length=8)
+
+    @field_validator("name")
+    @classmethod
+    def _strip_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Name must not be blank")
+        return value
+
+    @field_validator("password")
+    @classmethod
+    def _bcrypt_limit(cls, value: str) -> str:
+        # bcrypt only uses the first 72 bytes (and bcrypt>=5 raises on longer input)
+        if len(value.encode("utf-8")) > 72:
+            raise ValueError("Password must be at most 72 bytes")
+        return value
 
 class LoginRequest(BaseModel):
     email: EmailStr
@@ -234,8 +296,125 @@ class PredictionResponse(BaseModel):
 def home():
     return {"status": "API running"}
 
+login_attempts_by_email = SlidingWindowLimiter(LOGIN_MAX_ATTEMPTS_PER_EMAIL, LOGIN_WINDOW_S)
+login_attempts_by_ip = SlidingWindowLimiter(LOGIN_MAX_ATTEMPTS_PER_IP, LOGIN_WINDOW_S)
+registrations_by_ip = SlidingWindowLimiter(REGISTER_MAX_PER_IP, REGISTER_WINDOW_S)
+diet_generations_by_user = SlidingWindowLimiter(DIET_MAX_PER_USER, DIET_WINDOW_S)
+anonymous_diet_generations_by_ip = SlidingWindowLimiter(DIET_MAX_PER_IP_ANONYMOUS, DIET_WINDOW_S)
+DIET_LIMIT_MESSAGE = "Too many diet plans requested"
+
+def _client_ip(request: Request) -> str:
+    # Behind a reverse proxy, run uvicorn with --proxy-headers so this is the real client address
+    return request.client.host if request.client else "unknown"
+
+def _enforce_limits(*checks: tuple, message: str = "Too many attempts") -> None:
+    """Raise 429 if any (limiter, key) pair is over its limit."""
+    wait = max(limiter.retry_after(key) for limiter, key in checks)
+    if wait:
+        minutes = math.ceil(wait / 60)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"{message}. Please try again in {minutes} minute{'s' if minutes != 1 else ''}.",
+            headers={"Retry-After": str(wait)},
+        )
+
+async def authenticate(request: Request, email: str, password: str) -> dict:
+    """Check credentials with per-email and per-IP brute-force limits."""
+    ip, email_key = _client_ip(request), email.strip().lower()
+    _enforce_limits((login_attempts_by_email, email_key), (login_attempts_by_ip, ip))
+    # Count the attempt before the (slow) password check so parallel guesses can't all slip
+    # past the limit; a successful login then clears it
+    login_attempts_by_email.hit(email_key)
+    login_attempts_by_ip.hit(ip)
+
+    dal: FitGuardDAL = request.app.state.dal
+    user = await dal.get_user_by_email(email)
+    password_ok = await verify_password(password, user["password"] if user else _DUMMY_PASSWORD_HASH)
+    if not user or not password_ok:
+        raise HTTPException(status_code=401, detail="Incorrect email or password")
+
+    login_attempts_by_email.reset(email_key)
+    login_attempts_by_ip.undo(ip)
+    return user
+
+# =========================
+# SESSIONS (refresh-token cookie)
+# =========================
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+def _new_refresh_token() -> tuple:
+    token = secrets.token_urlsafe(32)
+    return token, _hash_token(token), datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+
+def _set_refresh_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        REFRESH_COOKIE_NAME, token,
+        max_age=REFRESH_TOKEN_EXPIRE_DAYS * 86400,
+        path=REFRESH_COOKIE_PATH,
+        httponly=True,        # unreadable from JavaScript
+        secure=COOKIE_SECURE,
+        samesite="strict",    # never sent on cross-site requests, which blocks CSRF on refresh/logout
+    )
+
+def _clear_refresh_cookie(response: Response) -> None:
+    response.delete_cookie(REFRESH_COOKIE_NAME, path=REFRESH_COOKIE_PATH,
+                           httponly=True, secure=COOKIE_SECURE, samesite="strict")
+
+def _session_body(user: dict) -> dict:
+    access_token = create_access_token(
+        data={"sub": user["email"], "user_id": user["id"]},
+        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+    )
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        "user": {"id": user["id"], "name": user["name"], "email": user["email"]},
+    }
+
+async def start_session(response: Response, dal: FitGuardDAL, user: dict) -> dict:
+    """Begin a new login: a fresh refresh-token family in the cookie plus an access token in the body."""
+    token, token_hash, expires_at = _new_refresh_token()
+    await dal.create_refresh_token(user["id"], token_hash, secrets.token_hex(16), expires_at)
+    _set_refresh_cookie(response, token)
+    return _session_body(user)
+
+@app.post("/api/auth/refresh")
+async def refresh_session(request: Request, response: Response):
+    """Exchange the refresh cookie for a new access token, rotating the refresh token."""
+    dal: FitGuardDAL = request.app.state.dal
+    token = request.cookies.get(REFRESH_COOKIE_NAME)
+    result, user = {"status": "invalid"}, None
+    if token:
+        new_token, new_hash, expires_at = _new_refresh_token()
+        result = await dal.rotate_refresh_token(_hash_token(token), new_hash, expires_at)
+        if result["status"] == "ok":
+            user = await dal.get_user_by_id(result["user_id"])
+
+    if user is None:
+        if result["status"] == "reused":
+            logger.warning(f"Refresh token reuse for user {result['user_id']}; revoked that login's sessions")
+        unauthorized = JSONResponse({"detail": "Session expired. Please log in again."}, status_code=401)
+        _clear_refresh_cookie(unauthorized)
+        return unauthorized
+
+    _set_refresh_cookie(response, new_token)
+    return _session_body(user)
+
+@app.post("/api/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout(request: Request, response: Response):
+    token = request.cookies.get(REFRESH_COOKIE_NAME)
+    if token:
+        await request.app.state.dal.revoke_refresh_token_family(_hash_token(token))
+    _clear_refresh_cookie(response)
+
 @app.post("/api/register")
-async def register(payload: RegisterRequest, request: Request):
+async def register(payload: RegisterRequest, request: Request, response: Response):
+    ip = _client_ip(request)
+    _enforce_limits((registrations_by_ip, ip))
+    registrations_by_ip.hit(ip)
+
     dal: FitGuardDAL = request.app.state.dal
     user = await dal.get_user_by_email(payload.email)
     if user:
@@ -243,45 +422,21 @@ async def register(payload: RegisterRequest, request: Request):
         
     hashed_password = await hash_password(payload.password)
     user_id = await dal.create_user(payload.name, payload.email, hashed_password)
-    
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": payload.email, "user_id": user_id}, expires_delta=access_token_expires
-    )
-    return {"access_token": access_token, "token_type": "bearer"}
+    user = {"id": user_id, "name": payload.name, "email": payload.email}
+    return await start_session(response, dal, user)
 
 @app.post("/api/login")
-async def login(payload: LoginRequest, request: Request):
-    dal: FitGuardDAL = request.app.state.dal
-    user = await dal.get_user_by_email(payload.email)
-    if not user or not await verify_password(payload.password, user["password"]):
-        raise HTTPException(status_code=401, detail="Incorrect email or password")
-        
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user["email"], "user_id": user["id"]}, expires_delta=access_token_expires
-    )
-    return {"access_token": access_token, "token_type": "bearer", "user": {"id": user["id"], "name": user["name"], "email": user["email"]}}
+async def login(payload: LoginRequest, request: Request, response: Response):
+    user = await authenticate(request, payload.email, payload.password)
+    return await start_session(response, request.app.state.dal, user)
 
+# OAuth2 password flow for the Swagger UI "Authorize" button: access token only, no session cookie
 @app.post("/api/token")
 async def login_for_access_token(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
-    dal: FitGuardDAL = request.app.state.dal
-    user = await dal.get_user_by_email(form_data.username)
-    if not user or not await verify_password(form_data.password, user["password"]):
-        raise HTTPException(status_code=401, detail="Incorrect email or password")
-        
+    user = await authenticate(request, form_data.username, form_data.password)
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": user["email"], "user_id": user["id"]}, expires_delta=access_token_expires
-    )
-    return {"access_token": access_token, "token_type": "bearer"}
-
-@app.post("/api/token/refresh")
-async def refresh_access_token(current_user: dict = Depends(get_current_user)):
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": current_user["email"], "user_id": current_user["id"]},
-        expires_delta=access_token_expires,
     )
     return {"access_token": access_token, "token_type": "bearer"}
 
@@ -295,13 +450,7 @@ async def get_current_user_profile(current_user: dict = Depends(get_current_user
 
 @app.post("/api/predict", response_model=PredictionResponse)
 async def get_prediction(payload: HealthInputs):
-    try:
-        return PredictionResponse(**run_assessment(payload.model_dump()))
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Prediction error: {str(e)}"
-        )
+    return PredictionResponse(**assess_or_422(payload.model_dump()))
 
 @app.post("/api/health-assessment", response_model=HealthAssessmentResponse)
 async def submit_health_assessment(
@@ -309,15 +458,14 @@ async def submit_health_assessment(
 ):
     dal: FitGuardDAL = request.app.state.dal
     user_id = current_user["id"]
+    input_data = payload.model_dump()
+
+    # 1. Risk assessment
+    prediction_result = assess_or_422(input_data)
+
+    # 2. Save the record for the authenticated user
+    smoking_bool = True if str(payload.smokingHabit).lower() in ("yes", "true") else False
     try:
-        input_data = payload.model_dump()
-
-        # 1. Risk assessment
-        prediction_result = run_assessment(input_data)
-
-        # 2. Save the record for the authenticated user
-        smoking_bool = True if str(payload.smokingHabit).lower() in ("yes", "true") else False
-        
         record_id = await dal.create_health_record(
             user_id=user_id,
             age=payload.age,
@@ -333,21 +481,16 @@ async def submit_health_assessment(
             diabetes=payload.diabetes.lower() in ("yes", "true"),
             bp_medication=payload.bpMedication.lower() in ("yes", "true"),
         )
+    except Exception:
+        raise internal_error("Could not save your health assessment")
 
-        # The diet blueprint takes 5-15 s, so it is generated separately via
-        # POST /api/records/{record_id}/diet/stream and the risk result is shown immediately
-        return HealthAssessmentResponse(
-            message="Health assessment submitted successfully",
-            record_id=record_id,
-            prediction=prediction_result,
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
+    # The diet blueprint takes 5-15 s, so it is generated separately via
+    # POST /api/records/{record_id}/diet/stream and the risk result is shown immediately
+    return HealthAssessmentResponse(
+        message="Health assessment submitted successfully",
+        record_id=record_id,
+        prediction=prediction_result,
+    )
 
 def _record_to_inputs(record) -> dict:
     """Rebuild the HealthInputs dict the risk model and RAG pipeline expect from a saved record."""
@@ -390,6 +533,9 @@ async def stream_diet_for_record(record_id: int, request: Request, current_user:
         raise HTTPException(status_code=404, detail="Health record not found")
     if record.user_id != current_user["id"]:
         raise HTTPException(status_code=403, detail="Not authorized to access this record")
+    user_key = str(current_user["id"])
+    _enforce_limits((diet_generations_by_user, user_key), message=DIET_LIMIT_MESSAGE)
+    diet_generations_by_user.hit(user_key)
 
     input_data = _record_to_inputs(record)
     prediction_result = run_assessment(input_data)
@@ -410,8 +556,8 @@ async def stream_diet_for_record(record_id: int, request: Request, current_user:
                 supplements=blueprint.get("supplements", [])
             )
             await emit("final", blueprint)
-        except Exception as e:
-            logger.error(f"Failed to generate or save diet blueprint for record {record_id}: {e}")
+        except Exception:
+            logger.exception(f"Failed to generate or save diet blueprint for record {record_id}")
             await emit("error", {"detail": "Diet generation failed. Please try again."})
         finally:
             await queue.put(None)
@@ -438,17 +584,17 @@ async def stream_diet_for_record(record_id: int, request: Request, current_user:
     )
 
 @app.post("/api/diet/recommend")
-async def recommend_diet(payload: HealthInputs):
+async def recommend_diet(payload: HealthInputs, request: Request):
     """Risk assessment + RAG-grounded diet blueprint, without creating a user or saving records."""
+    ip = _client_ip(request)
+    _enforce_limits((anonymous_diet_generations_by_ip, ip), message=DIET_LIMIT_MESSAGE)
     input_data = payload.model_dump()
-    try:
-        prediction_result = run_assessment(input_data)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Prediction error: {str(e)}")
+    prediction_result = assess_or_422(input_data)
+    anonymous_diet_generations_by_ip.hit(ip)  # counted only once the inputs are valid
     try:
         diet_blueprint = await generate_diet_blueprint(input_data, prediction_result)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Diet generation failed: {str(e)}")
+    except Exception:
+        raise internal_error("Diet generation failed", status_code=status.HTTP_502_BAD_GATEWAY)
     return {"prediction": prediction_result, "diet_blueprint": diet_blueprint}
 
 @app.get("/api/rag/status")

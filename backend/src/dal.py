@@ -122,6 +122,20 @@ class FitGuardDAL:
                     supplements JSONB NOT NULL,
                     created_at TIMESTAMP NOT NULL
                 );
+
+                -- Refresh tokens are stored as SHA-256 hashes. Each login starts a family; every
+                -- refresh revokes the used token and issues the next one in the same family.
+                CREATE TABLE IF NOT EXISTS refresh_tokens (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    token_hash CHAR(64) UNIQUE NOT NULL,
+                    family_id VARCHAR(32) NOT NULL,
+                    expires_at TIMESTAMP NOT NULL,
+                    revoked_at TIMESTAMP,
+                    created_at TIMESTAMP NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS refresh_tokens_family_idx ON refresh_tokens (family_id);
+                CREATE INDEX IF NOT EXISTS refresh_tokens_expires_idx ON refresh_tokens (expires_at);
             """)
 
     async def get_user_by_email(self, email: str) -> Optional[dict]:
@@ -129,6 +143,11 @@ class FitGuardDAL:
             row = await conn.fetchrow("SELECT * FROM users WHERE email = $1", email)
             return dict(row) if row else None
     
+    async def get_user_by_id(self, user_id: int) -> Optional[dict]:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM users WHERE id = $1", user_id)
+            return dict(row) if row else None
+
     async def create_user(
             self,
             name: str,
@@ -242,3 +261,61 @@ class FitGuardDAL:
                 user_id
             )
             return [DietBlueprint.from_row(row) for row in rows]
+    # ---------- refresh tokens ----------
+
+    async def create_refresh_token(self, user_id: int, token_hash: str, family_id: str, expires_at: datetime) -> None:
+        async with self._pool.acquire() as conn:
+            # Opportunistic cleanup keeps the table small without a scheduled job
+            await conn.execute("DELETE FROM refresh_tokens WHERE expires_at < $1", datetime.utcnow())
+            await conn.execute(
+                """
+                INSERT INTO refresh_tokens (user_id, token_hash, family_id, expires_at, created_at)
+                VALUES ($1, $2, $3, $4, $5)
+                """,
+                user_id, token_hash, family_id, expires_at, datetime.utcnow()
+            )
+
+    async def rotate_refresh_token(self, old_hash: str, new_hash: str, expires_at: datetime) -> Dict[str, Any]:
+        """
+        Atomically swap a refresh token for a new one in the same family.
+        Returns {"status": "ok", "user_id": ...}, or {"status": "invalid" | "expired" | "reused"}.
+        A revoked token being presented again means it was copied, so its whole family is revoked.
+        """
+        now = datetime.utcnow()
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    "SELECT user_id, family_id, expires_at, revoked_at FROM refresh_tokens WHERE token_hash = $1 FOR UPDATE",
+                    old_hash
+                )
+                if row is None:
+                    return {"status": "invalid"}
+                if row["revoked_at"] is not None:
+                    await conn.execute(
+                        "UPDATE refresh_tokens SET revoked_at = $2 WHERE family_id = $1 AND revoked_at IS NULL",
+                        row["family_id"], now
+                    )
+                    return {"status": "reused", "user_id": row["user_id"]}
+                if row["expires_at"] <= now:
+                    return {"status": "expired"}
+                await conn.execute("UPDATE refresh_tokens SET revoked_at = $2 WHERE token_hash = $1", old_hash, now)
+                await conn.execute(
+                    """
+                    INSERT INTO refresh_tokens (user_id, token_hash, family_id, expires_at, created_at)
+                    VALUES ($1, $2, $3, $4, $5)
+                    """,
+                    row["user_id"], new_hash, row["family_id"], expires_at, now
+                )
+                return {"status": "ok", "user_id": row["user_id"]}
+
+    async def revoke_refresh_token_family(self, token_hash: str) -> None:
+        """Log out: revoke the presented token and every other token from the same login."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE refresh_tokens SET revoked_at = $2
+                WHERE revoked_at IS NULL
+                  AND family_id = (SELECT family_id FROM refresh_tokens WHERE token_hash = $1)
+                """,
+                token_hash, datetime.utcnow()
+            )

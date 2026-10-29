@@ -37,6 +37,8 @@ htmlcov/
 .env.production.local
 *.env
 *.env.*
+# Template with placeholder values only — safe and needed for setup
+!.env.example
 
 # Logs
 logs

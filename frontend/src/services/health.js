@@ -1,5 +1,6 @@
 import { apiService } from './api';
 import { API_CONFIG } from '../config/api';
+import { session } from './session';
 
 // Diet generation streams progress, so it gets a longer overall limit than normal API calls
 const DIET_STREAM_TIMEOUT = 120000;
@@ -29,14 +30,21 @@ export const healthService = {
   async streamDietForRecord(recordId, onEvent) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), DIET_STREAM_TIMEOUT);
-    const token = localStorage.getItem('fitguard_token');
-
-    try {
-      const response = await fetch(`${API_CONFIG.BASE_URL}/api/records/${recordId}/diet/stream`, {
+    const open = () => {
+      const token = session.getToken();
+      return fetch(`${API_CONFIG.BASE_URL}/api/records/${recordId}/diet/stream`, {
         method: 'POST',
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         signal: controller.signal,
       });
+    };
+
+    try {
+      let response = await open();
+      // Expired access token: refresh once from the cookie and reopen the stream
+      if (response.status === 401 && (await session.refresh())) {
+        response = await open();
+      }
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
         const httpError = new Error(errorData.detail || `HTTP error! status: ${response.status}`);

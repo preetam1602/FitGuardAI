@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { authService } from "./services/auth";
 import { Routes, Route } from "react-router-dom";
 import Navbar from "./components/Navbar";
 import Home from "./pages/Home";
@@ -9,6 +10,11 @@ import AuthModal from "./components/AuthModal";
 
 function App(){
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+
+  // Pick up a session from a previous visit via the httpOnly refresh cookie
+  useEffect(() => {
+    authService.restoreSession();
+  }, []);
 
   const handleOpenAuthModal = () => {
     setIsAuthModalOpen(true);

@@ -4,6 +4,8 @@
 .env
 .env.*
 *.env
+# Template with placeholder values only — safe and needed for setup
+!.env.example
 
 # =========================
 # Python Virtual Environments

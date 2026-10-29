@@ -37,7 +37,6 @@ function AuthModal({ isOpen, onClose, onSubmit }) {
         setSubmitting(true);
         try {
             const response = await authService.login(loginData.email, loginData.password);
-            authService.setToken(response.access_token);
             onSubmit({ type: 'login', data: { user: response.user } });
         } catch (error) {
             alert('Login failed: ' + (error.message || 'Unknown error'));
@@ -55,12 +54,11 @@ function AuthModal({ isOpen, onClose, onSubmit }) {
         if (submitting) return;
         setSubmitting(true);
         try {
-            const response = await authService.register(
+            await authService.register(
                 registerData.name,
                 registerData.email,
                 registerData.password
             );
-            authService.setToken(response.access_token);
             onSubmit({ type: 'register', data: { name: registerData.name, email: registerData.email } });
         } catch (error) {
             alert('Registration failed: ' + (error.message || 'Unknown error'));
@@ -208,7 +206,10 @@ function AuthModal({ isOpen, onClose, onSubmit }) {
                                             value={registerData.password}
                                             onChange={handleRegisterChange}
                                             className="w-full px-4 py-3 bg-[var(--panel)] border border-[var(--border)] text-[var(--text)] text-xs font-mono focus:outline-none focus:border-[var(--pulse)] transition-colors"
-                                            placeholder="••••"
+                                            placeholder="8+ chars"
+                                            minLength={8}
+                                            maxLength={72}
+                                            autoComplete="new-password"
                                             required
                                         />
                                     </div>
