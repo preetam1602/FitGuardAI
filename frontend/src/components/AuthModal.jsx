@@ -38,16 +38,7 @@ function AuthModal({ isOpen, onClose, onSubmit }) {
         try {
             const response = await authService.login(loginData.email, loginData.password);
             authService.setToken(response.access_token);
-            // Pass the plain password so HealthFitness can include it in the health-assessment payload
-            onSubmit({
-                type: 'login',
-                data: {
-                    email: loginData.email,
-                    password: loginData.password,
-                    name: response.user?.name || '',
-                    ...response,
-                },
-            });
+            onSubmit({ type: 'login', data: { user: response.user } });
         } catch (error) {
             alert('Login failed: ' + (error.message || 'Unknown error'));
         } finally {
@@ -70,16 +61,7 @@ function AuthModal({ isOpen, onClose, onSubmit }) {
                 registerData.password
             );
             authService.setToken(response.access_token);
-            // Pass all register fields including the plain password for the health-assessment payload
-            onSubmit({
-                type: 'register',
-                data: {
-                    name: registerData.name,
-                    email: registerData.email,
-                    password: registerData.password,
-                    ...response,
-                },
-            });
+            onSubmit({ type: 'register', data: { name: registerData.name, email: registerData.email } });
         } catch (error) {
             alert('Registration failed: ' + (error.message || 'Unknown error'));
         } finally {

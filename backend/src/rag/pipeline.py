@@ -8,7 +8,7 @@ import logging
 import os
 import re
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Awaitable, Callable, Dict, List, Optional, Tuple
 
 from groq import BadRequestError, RateLimitError
 
@@ -251,25 +251,56 @@ def _rank(verdict: Optional[Dict]) -> tuple:
     return (len(SUPPORT_LEVELS) - SUPPORT_LEVELS.index(verdict["is_supported"]), verdict["is_useful"])
 
 
-async def generate_rag_diet_blueprint(groq_client, health_data: Dict, prediction: Dict) -> Dict:
+def _decorate(blueprint: Dict, passages: List[Dict], verdict: Optional[Dict], retries: int,
+              model_used: str, timings: Dict) -> Dict:
+    """Attach sources and Self-RAG metadata; returns a new dict so drafts and the final answer stay separate."""
+    result = _strip_invalid_citations(blueprint, len(passages))
+    result["sources"] = _sources(passages)
+    result["rag_grounded"] = bool(passages)
+    result["self_rag"] = {
+        "critic": verdict,
+        "verified": verdict is not None,
+        "regenerations": retries,
+        "generator_model": model_used,
+        "reranked_passages": sum(1 for p in passages if p.get("rerank_score") is not None),
+        "timings_ms": dict(timings),
+    }
+    return result
+
+
+async def _no_op(event: str, data: Dict) -> None:
+    pass
+
+
+async def generate_rag_diet_blueprint(
+    groq_client, health_data: Dict, prediction: Dict,
+    on_event: Callable[[str, Dict], Awaitable[None]] = _no_op,
+) -> Dict:
     """
     Self-RAG flow:  retrieve (hybrid + conditional rerank, IsRel filter)
                  -> generate grounded blueprint
                  -> critique (IsSup + IsUse, one fast call, time-boxed)
                  -> regenerate once with critic feedback ONLY on serious failure.
+
+    `on_event` receives progress for streaming clients: ("status", {"stage"}) at each step and
+    ("draft", blueprint) as soon as the first draft exists, before the critic has checked it.
     """
     timings = {}
+    await on_event("status", {"stage": "retrieving"})
     t = time.perf_counter()
     passages = _fit_context(await retrieve_context(health_data, prediction))
     timings["retrieval"] = _ms(t)
 
     context = _format_context(passages)
+    await on_event("status", {"stage": "generating", "passages": len(passages)})
     t = time.perf_counter()
     blueprint, model_used = await _generate(groq_client, _build_prompt(health_data, prediction, context))
     timings["generation"] = _ms(t)
 
     verdict, retries = None, 0
     if SELF_RAG_CRITIC and passages:
+        await on_event("draft", _decorate(blueprint, passages, None, 0, model_used, timings))
+        await on_event("status", {"stage": "verifying"})
         profile = _user_profile(health_data)
         t = time.perf_counter()
         verdict = await critique(groq_client, blueprint, passages, profile)
@@ -278,6 +309,7 @@ async def generate_rag_diet_blueprint(groq_client, health_data: Dict, prediction
         while needs_regeneration(verdict) and retries < SELF_RAG_MAX_RETRIES:
             retries += 1
             logger.info(f"Self-RAG critic rejected blueprint ({verdict}) — regenerating")
+            await on_event("status", {"stage": "revising"})
             feedback = "\n".join(filter(None, [verdict["feedback"], *verdict["unsupported_claims"]]))
             t = time.perf_counter()
             try:
@@ -291,15 +323,4 @@ async def generate_rag_diet_blueprint(groq_client, health_data: Dict, prediction
             if new_verdict is None or _rank(new_verdict) >= _rank(verdict):
                 blueprint, verdict, model_used = candidate, new_verdict, candidate_model
 
-    blueprint = _strip_invalid_citations(blueprint, len(passages))
-    blueprint["sources"] = _sources(passages)
-    blueprint["rag_grounded"] = bool(passages)
-    blueprint["self_rag"] = {
-        "critic": verdict,
-        "verified": verdict is not None,
-        "regenerations": retries,
-        "generator_model": model_used,
-        "reranked_passages": sum(1 for p in passages if p.get("rerank_score") is not None),
-        "timings_ms": timings,
-    }
-    return blueprint
+    return _decorate(blueprint, passages, verdict, retries, model_used, timings)

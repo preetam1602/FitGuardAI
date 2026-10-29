@@ -34,6 +34,11 @@ export const authService = {
     window.dispatchEvent(new Event(AUTH_CHANGED_EVENT));
   },
 
+  clearToken() {
+    localStorage.removeItem('fitguard_token');
+    window.dispatchEvent(new Event(AUTH_CHANGED_EVENT));
+  },
+
   async refreshToken() {
     const token = this.getToken();
     if (!token) return null;

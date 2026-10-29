@@ -1,12 +1,20 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import AuthModal from '../components/AuthModal';
 import { healthService } from '../services/health';
+import { authService } from '../services/auth';
 
 const RISK_COLORS = {
     Low: 'text-[var(--pulse)]',
     Intermediate: 'text-[var(--info)]',
     High: 'text-[var(--warn)]',
 };
+
+const DIET_STAGES = [
+    { key: 'retrieving', label: 'Retrieving dietary guidelines' },
+    { key: 'generating', label: 'Drafting your diet blueprint' },
+    { key: 'verifying', label: 'Verifying against guidelines' },
+    { key: 'revising', label: 'Revising flagged recommendations' },
+];
 
 const BP_STAGE_COLORS = {
     'Normal': 'text-[var(--pulse)]',
@@ -39,6 +47,11 @@ function HealthFitness() {
     const [activeTab, setActiveTab] = useState('bp');
     const [loading, setLoading] = useState(false);
     const [submitError, setSubmitError] = useState(null);
+    // Diet generation progress: retrieving / generating / verifying / revising, null when idle
+    const [dietStage, setDietStage] = useState(null);
+    const [dietError, setDietError] = useState(null);
+    const [dietRecordId, setDietRecordId] = useState(null);
+    const dietRecordRef = useRef(null);
 
     // Calculate BMI whenever height or weight changes
     useEffect(() => {
@@ -70,59 +83,47 @@ function HealthFitness() {
 
     const handleSubmit = (e) => {
         e.preventDefault();
-        // Store health data and open auth modal
         const healthDataWithBMI = { ...formData, bmi };
-        setPendingHealthData(healthDataWithBMI);
-        setIsAuthModalOpen(true);
+        if (authService.isAuthenticated()) {
+            submitAssessment(healthDataWithBMI);
+        } else {
+            // Ask the user to log in first; the assessment is submitted once they do
+            setPendingHealthData(healthDataWithBMI);
+            setIsAuthModalOpen(true);
+        }
     };
 
-    const handleAuthSubmit = async (authData) => {
-        // Combine auth data with health data.
-        // For 'login' flow, the server doesn't return name, so fall back to 'User'.
+    const handleAuthSubmit = () => {
+        // AuthModal has already stored the token, which the API service sends as a Bearer header
+        setIsAuthModalOpen(false);
+        if (pendingHealthData) submitAssessment(pendingHealthData);
+    };
+
+    const submitAssessment = async (healthData) => {
         const payload = {
-            name: authData.data.name || 'User',
-            email: authData.data.email,
-            password: authData.data.password,
-            age: Number(pendingHealthData.age),
-            gender: pendingHealthData.gender,
-            height: parseFloat(pendingHealthData.height),
-            weight: parseFloat(pendingHealthData.weight),
-            bmi: pendingHealthData.bmi ? parseFloat(pendingHealthData.bmi) : 0,
-            bloodPressure: pendingHealthData.bloodPressure,
-            heartRate: parseInt(pendingHealthData.heartRate, 10),
-            physicalActivity: pendingHealthData.physicalActivity,
-            sleepHours: parseFloat(pendingHealthData.sleepHours),
-            smokingHabit: pendingHealthData.smokingHabit,
-            diabetes: pendingHealthData.diabetes,
-            bpMedication: pendingHealthData.bpMedication,
+            age: Number(healthData.age),
+            gender: healthData.gender,
+            height: parseFloat(healthData.height),
+            weight: parseFloat(healthData.weight),
+            bmi: healthData.bmi ? parseFloat(healthData.bmi) : 0,
+            bloodPressure: healthData.bloodPressure,
+            heartRate: parseInt(healthData.heartRate, 10),
+            physicalActivity: healthData.physicalActivity,
+            sleepHours: parseFloat(healthData.sleepHours),
+            smokingHabit: healthData.smokingHabit,
+            diabetes: healthData.diabetes,
+            bpMedication: healthData.bpMedication,
         };
 
-        // Login/register already succeeded: close the modal now and show progress on the
-        // EXECUTE DIAGNOSTIC button while the diet blueprint is generated (5-15 s)
-        setIsAuthModalOpen(false);
         setLoading(true);
         setSubmitError(null);
-        setDietBlueprint(null);
         setActiveTab('bp'); // reset to bp tab before fetching
 
         try {
-            // /api/health-assessment runs ML prediction + saves data + generates AI diet in one call.
-            // No need to call /api/predict separately.
+            // Risk assessment + save returns in milliseconds; the diet blueprint is streamed afterwards
             const result = await healthService.submitHealthAssessment(payload);
-
-            // Update prediction & diet blueprint from the consolidated endpoint response
-            if (result.prediction) setPrediction(result.prediction);
-            if (result.diet_blueprint) {
-                setDietBlueprint(result.diet_blueprint);
-                setActiveTab('diet'); // Auto-switch to diet tab
-            }
-
-            // Store JWT token if provided
-            if (result.access_token) {
-                localStorage.setItem('fitguard_token', result.access_token);
-            }
-
-            alert('Data submitted successfully! ' + (result.message || ''));
+            setPrediction(result.prediction);
+            generateDiet(result.record_id);
 
             // Reset form after successful submission
             setFormData({
@@ -141,10 +142,41 @@ function HealthFitness() {
             setBmi('');
             setPendingHealthData(null);
         } catch (error) {
+            if (error.status === 401) {
+                // Token missing or expired: drop it and ask the user to log in again, keeping their inputs
+                authService.clearToken();
+                setPendingHealthData(healthData);
+                setIsAuthModalOpen(true);
+                return;
+            }
             console.error('Error submitting data:', error);
             setSubmitError(error.message || 'An error occurred connecting to the server. Please try again.');
         } finally {
             setLoading(false);
+        }
+    };
+
+    const generateDiet = async (recordId) => {
+        dietRecordRef.current = recordId;
+        // A newer submission replaces this one; ignore events from the older stream
+        const isCurrent = () => dietRecordRef.current === recordId;
+        setDietRecordId(recordId);
+        setDietBlueprint(null);
+        setDietError(null);
+        setDietStage('retrieving');
+
+        try {
+            await healthService.streamDietForRecord(recordId, (event, data) => {
+                if (!isCurrent()) return;
+                if (event === 'status') setDietStage(data.stage);
+                else if (event === 'draft') setDietBlueprint({ ...data, isDraft: true });
+                else if (event === 'final') setDietBlueprint(data);
+                else if (event === 'error') setDietError(data.detail);
+            });
+        } catch (error) {
+            if (isCurrent()) setDietError(error.message || 'Diet generation failed. Please try again.');
+        } finally {
+            if (isCurrent()) setDietStage(null);
         }
     };
 
@@ -189,12 +221,13 @@ function HealthFitness() {
                                 >
                                     Risk Assessment
                                 </button>
-                                {dietBlueprint && (
-                                    <button 
-                                        className={`pb-3 px-4 font-orbitron text-xs md:text-sm uppercase tracking-widest transition-colors ${activeTab === 'diet' ? 'border-b-2 border-[var(--pulse)] text-[var(--pulse)]' : 'text-[var(--dim)] hover:text-[var(--white)]'}`}
+                                {(dietBlueprint || dietStage || dietError) && (
+                                    <button
+                                        className={`pb-3 px-4 font-orbitron text-xs md:text-sm uppercase tracking-widest transition-colors flex items-center gap-2 ${activeTab === 'diet' ? 'border-b-2 border-[var(--pulse)] text-[var(--pulse)]' : 'text-[var(--dim)] hover:text-[var(--white)]'}`}
                                         onClick={() => setActiveTab('diet')}
                                     >
                                         AI Diet Blueprint
+                                        {dietStage && <span className="w-[6px] h-[6px] rounded-full bg-[var(--pulse)] animate-blink" aria-label="Generating"></span>}
                                     </button>
                                 )}
                             </div>
@@ -296,8 +329,50 @@ function HealthFitness() {
                                 </div>
                             )}
 
+                            {activeTab === 'diet' && !dietBlueprint && dietStage && (
+                                <div className="bg-[var(--panel)] p-6 border border-[var(--border)] animate-fade-in" aria-live="polite">
+                                    <p className="font-orbitron text-[12px] uppercase tracking-[4px] text-[var(--pulse)] mb-4">Generating AI Diet Blueprint</p>
+                                    <ul className="space-y-3 font-mono text-sm">
+                                        {DIET_STAGES.filter(s => s.key !== 'revising' || dietStage === 'revising').map((s, idx) => {
+                                            const current = DIET_STAGES.findIndex(d => d.key === dietStage);
+                                            const state = idx < current ? 'done' : idx === current ? 'active' : 'pending';
+                                            return (
+                                                <li key={s.key} className={`flex items-center gap-3 ${state === 'pending' ? 'text-[var(--dim)]' : 'text-[var(--white)]'}`}>
+                                                    <span className={state === 'active' ? 'text-[var(--pulse)] animate-blink' : 'text-[var(--pulse)]'}>
+                                                        {state === 'done' ? '✓' : state === 'active' ? '▸' : '·'}
+                                                    </span>
+                                                    {s.label}
+                                                </li>
+                                            );
+                                        })}
+                                    </ul>
+                                </div>
+                            )}
+
+                            {activeTab === 'diet' && dietError && (
+                                <div className="mb-8 p-5 border border-[var(--warn)] bg-[rgba(255,77,109,0.05)] font-mono text-sm text-[var(--warn)] flex flex-wrap items-center justify-between gap-4">
+                                    <span><span className="animate-blink">⚠</span> {dietError}</span>
+                                    {!dietStage && dietRecordId && (
+                                        <button
+                                            onClick={() => generateDiet(dietRecordId)}
+                                            className="px-4 py-2 border border-[var(--pulse)] text-[var(--pulse)] font-orbitron text-[10px] uppercase tracking-widest hover:bg-[rgba(0,255,200,0.1)] transition-colors"
+                                        >
+                                            Retry
+                                        </button>
+                                    )}
+                                </div>
+                            )}
+
                             {activeTab === 'diet' && dietBlueprint && (
                                 <div className="space-y-8 animate-fade-in">
+                                    {dietBlueprint.isDraft && (
+                                        <div className="p-4 border border-[var(--border)] bg-[rgba(0,255,200,0.04)] font-mono text-xs text-[var(--dim)] flex items-center gap-3" aria-live="polite">
+                                            <span className="w-[6px] h-[6px] rounded-full bg-[var(--pulse)] animate-blink"></span>
+                                            {dietStage === 'revising'
+                                                ? 'Draft — the reviewer flagged some recommendations; a revised plan is being generated…'
+                                                : 'Draft — checking recommendations against the dietary guidelines…'}
+                                        </div>
+                                    )}
                                     {/* Diet Type Badge & Reason */}
                                     <div className="bg-[var(--panel)] p-6 border border-[var(--border)] flex flex-col md:flex-row items-center gap-6">
                                         <div className="px-4 py-2 bg-[rgba(0,255,200,0.1)] border border-[var(--pulse)] text-[var(--pulse)] font-orbitron font-bold uppercase tracking-widest whitespace-nowrap">
@@ -465,7 +540,7 @@ function HealthFitness() {
                                 disabled={loading}
                                 className="btn-primary min-w-[240px]"
                             >
-                                {loading ? 'ANALYZING BIOMETRICS & GENERATING AI DIET...' : 'EXECUTE DIAGNOSTIC'}
+                                {loading ? 'ANALYZING BIOMETRICS...' : 'EXECUTE DIAGNOSTIC'}
                             </button>
                             <div className="text-[8px] uppercase tracking-[2px] text-[var(--dim)]">
                                 Encrypted biometric data transmission enabled

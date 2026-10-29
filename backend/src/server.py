@@ -11,6 +11,7 @@ from fastapi import FastAPI, HTTPException, status, Request, Depends
 from pydantic import BaseModel, EmailStr, Field, field_validator
 import bcrypt
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
 from typing import Optional, Any
 import asyncpg
@@ -52,7 +53,13 @@ ALLOWED_ORIGINS = [
     if origin.strip()
 ]
 
-SECRET_KEY = os.environ.get("SECRET_KEY", "fallback_secret_key")
+# No default: a guessable fallback would let anyone forge JWTs
+SECRET_KEY = os.environ.get("SECRET_KEY")
+if not SECRET_KEY:
+    raise RuntimeError(
+        "SECRET_KEY is not set. Add it to backend/.env; generate one with: "
+        "python -c \"import secrets; print(secrets.token_urlsafe(48))\""
+    )
 ALGORITHM = os.environ.get("ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 
@@ -121,8 +128,8 @@ async def get_current_user(request: Request, token: str = Depends(oauth2_scheme)
 # =========================
 _groq_client: Optional[AsyncGroq] = None
 
-async def generate_diet_blueprint(health_data: dict, prediction_result: dict) -> dict:
-    """Diet blueprint grounded in the dietary-guideline knowledge base (see src/rag)."""
+async def generate_diet_blueprint(health_data: dict, prediction_result: dict, **kwargs) -> dict:
+    """Diet blueprint grounded in the dietary-guideline knowledge base (see src/rag). kwargs go to the pipeline."""
     global _groq_client
     if not GROQ_API_KEY:
         raise ValueError("GROQ_API_KEY not set in environment")
@@ -132,7 +139,7 @@ async def generate_diet_blueprint(health_data: dict, prediction_result: dict) ->
         _groq_client = AsyncGroq(api_key=GROQ_API_KEY)
     client = _groq_client
     try:
-        return await generate_rag_diet_blueprint(client, health_data, prediction_result)
+        return await generate_rag_diet_blueprint(client, health_data, prediction_result, **kwargs)
     except Exception as e:
         logger.error(f"Groq API error: {e}")
         raise e
@@ -203,16 +210,10 @@ class HealthInputs(BaseModel):
         systolic, diastolic = parse_bp(value)
         return f"{systolic}/{diastolic}"
 
-class HealthAssessmentRequest(HealthInputs):
-    name: str
-    email: EmailStr
-    password: str
-
 class HealthAssessmentResponse(BaseModel):
     message: str
+    record_id: int
     prediction: Optional[dict] = None
-    diet_blueprint: Optional[dict] = None
-    access_token: Optional[str] = None
 
 class PredictionResponse(BaseModel):
     risk_level: str
@@ -303,24 +304,18 @@ async def get_prediction(payload: HealthInputs):
         )
 
 @app.post("/api/health-assessment", response_model=HealthAssessmentResponse)
-async def submit_health_assessment(payload: HealthAssessmentRequest, request: Request):
+async def submit_health_assessment(
+    payload: HealthInputs, request: Request, current_user: dict = Depends(get_current_user)
+):
     dal: FitGuardDAL = request.app.state.dal
+    user_id = current_user["id"]
     try:
         input_data = payload.model_dump()
 
         # 1. Risk assessment
         prediction_result = run_assessment(input_data)
-        
-        # 2. Database save: ensure user exists and verify password
-        user = await dal.get_user_by_email(payload.email)
-        if not user:
-            hashed_password = await hash_password(payload.password)
-            user_id = await dal.create_user(payload.name, payload.email, hashed_password)
-        else:
-            if not await verify_password(payload.password, user["password"]):
-                raise HTTPException(status_code=401, detail="Incorrect password for existing user")
-            user_id = user["id"]
-            
+
+        # 2. Save the record for the authenticated user
         smoking_bool = True if str(payload.smokingHabit).lower() in ("yes", "true") else False
         
         record_id = await dal.create_health_record(
@@ -339,32 +334,12 @@ async def submit_health_assessment(payload: HealthAssessmentRequest, request: Re
             bp_medication=payload.bpMedication.lower() in ("yes", "true"),
         )
 
-        # 3. Groq Diet Blueprint
-        diet_blueprint = None
-        try:
-            diet_blueprint = await generate_diet_blueprint(input_data, prediction_result)
-            await dal.save_diet_blueprint(
-                user_id=user_id,
-                record_id=record_id,
-                macros=diet_blueprint.get("macros", {}),
-                meal_plan=diet_blueprint.get("meal_plan", []),
-                foods_to_avoid=diet_blueprint.get("foods_to_avoid", []),
-                supplements=diet_blueprint.get("supplements", [])
-            )
-        except Exception as e:
-            logger.error(f"Failed to generate or save diet blueprint: {e}")
-
-        # 4. Generate JWT token
-        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-        access_token = create_access_token(
-            data={"sub": payload.email, "user_id": user_id}, expires_delta=access_token_expires
-        )
-
+        # The diet blueprint takes 5-15 s, so it is generated separately via
+        # POST /api/records/{record_id}/diet/stream and the risk result is shown immediately
         return HealthAssessmentResponse(
             message="Health assessment submitted successfully",
+            record_id=record_id,
             prediction=prediction_result,
-            diet_blueprint=diet_blueprint,
-            access_token=access_token
         )
     except HTTPException:
         raise
@@ -373,6 +348,94 @@ async def submit_health_assessment(payload: HealthAssessmentRequest, request: Re
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
+
+def _record_to_inputs(record) -> dict:
+    """Rebuild the HealthInputs dict the risk model and RAG pipeline expect from a saved record."""
+    yes_no = lambda flag: "yes" if flag else "no"
+    return {
+        "age": record.age,
+        "gender": record.gender,
+        "height": record.height_cm,
+        "weight": record.weight_kg,
+        "bmi": record.bmi,
+        "bloodPressure": record.blood_pressure,
+        "heartRate": record.heart_rate,
+        "physicalActivity": record.physical_activity,
+        "sleepHours": record.sleep_hours,
+        "smokingHabit": yes_no(record.smoking_habit),
+        "diabetes": yes_no(record.diabetes),
+        "bpMedication": yes_no(record.bp_medication),
+    }
+
+def _sse(event: str, data: Any) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
+
+SSE_KEEPALIVE_S = 10
+# Strong references so in-flight generations aren't garbage-collected after the client disconnects
+_diet_tasks: set = set()
+
+@app.post("/api/records/{record_id}/diet/stream")
+async def stream_diet_for_record(record_id: int, request: Request, current_user: dict = Depends(get_current_user)):
+    """
+    Generate the diet blueprint for a saved record as Server-Sent Events:
+      status {stage}  -> retrieving / generating / verifying / revising
+      draft  {...}    -> first draft, shown while the critic checks it
+      final  {...}    -> the saved blueprint
+      error  {detail} -> generation failed
+    Generation runs as its own task, so the blueprint is still saved if the client disconnects.
+    """
+    dal: FitGuardDAL = request.app.state.dal
+    record = await dal.get_health_record(record_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Health record not found")
+    if record.user_id != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Not authorized to access this record")
+
+    input_data = _record_to_inputs(record)
+    prediction_result = run_assessment(input_data)
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def emit(event: str, data: dict):
+        await queue.put((event, data))
+
+    async def run():
+        try:
+            blueprint = await generate_diet_blueprint(input_data, prediction_result, on_event=emit)
+            await dal.save_diet_blueprint(
+                user_id=record.user_id,
+                record_id=record_id,
+                macros=blueprint.get("macros", {}),
+                meal_plan=blueprint.get("meal_plan", []),
+                foods_to_avoid=blueprint.get("foods_to_avoid", []),
+                supplements=blueprint.get("supplements", [])
+            )
+            await emit("final", blueprint)
+        except Exception as e:
+            logger.error(f"Failed to generate or save diet blueprint for record {record_id}: {e}")
+            await emit("error", {"detail": "Diet generation failed. Please try again."})
+        finally:
+            await queue.put(None)
+
+    task = asyncio.create_task(run())
+    _diet_tasks.add(task)
+    task.add_done_callback(_diet_tasks.discard)
+
+    async def events():
+        while True:
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=SSE_KEEPALIVE_S)
+            except asyncio.TimeoutError:
+                yield ": keepalive\n\n"  # SSE comment: keeps proxies from closing an idle connection
+                continue
+            if item is None:
+                return
+            yield _sse(*item)
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 @app.post("/api/diet/recommend")
 async def recommend_diet(payload: HealthInputs):
