@@ -7,9 +7,6 @@ email-validator
 python-dotenv
 bcrypt
 numpy
-pandas
-scikit-learn
-joblib
 PyJWT
 python-multipart
 pypdf

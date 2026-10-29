@@ -14,8 +14,8 @@ FitGuard AI is a high-performance, medical-grade predictive platform designed to
 ### 01. Biometric Fusion
 Real-time integration of physiological data streams, including heart rate, blood pressure trends, age, height, weight, physical activity, sleep, and smoking habits.
 
-### 02. Neural Risk Prediction
-Proprietary machine learning models trained to predict blood pressure trends, risk levels, and output structured cardiovascular and lifestyle recommendations.
+### 02. Cardiovascular Risk Engine
+10-year heart disease risk from the validated Framingham equation (D'Agostino 2008), a "heart age", blood pressure staging per the 2017 ACC/AHA guideline, and a breakdown of how much each modifiable factor (smoking, BP, BMI) adds to the user's risk. Deterministic and citable, with no trained model. See `backend/health_recommendation/README.md`.
 
 ### 03. AI Diet Blueprint (Groq)
 Generates highly customized dietary guidelines, macronutrient targets, full meal plans, supplements, foods to avoid, and weekly habit tips powered by Groq Llama 3.3.
@@ -51,7 +51,7 @@ The platform utilizes a **Cyberpunk Health HUD** aesthetic, designed to evoke th
 - **FastAPI**: Asynchronous Python framework for high-concurrency data processing.
 - **PostgreSQL (`asyncpg`)**: High-performance asynchronous database storage replacing MongoDB.
 - **Groq API**: LLM pipeline for dietary optimization.
-- **Machine Learning**: Scikit-learn based predictive models for health risk assessment.
+- **Risk Engine**: Framingham CVD risk equation + ACC/AHA BP staging (pure Python, unit-tested).
 - **JWT Auth**: PyJWT & bcrypt for cryptography.
 
 ---
@@ -94,10 +94,7 @@ FRONTEND_URL=http://localhost:5173/
    ```powershell
    .\start.ps1
    ```
-   > **Note:** The ML model is auto-trained on first request if `health_recommendation/models/` is missing. You can also train manually:
-   > ```bash
-   > cd health_recommendation && python -m src.train
-   > ```
+   > **Note:** Run the risk engine tests with `python -m pytest tests` from `backend/`.
 
 ### Frontend Setup
 1. Navigate to the frontend directory and install dependencies:

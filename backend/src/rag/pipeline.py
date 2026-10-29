@@ -63,7 +63,7 @@ def build_queries(health_data: Dict, prediction: Optional[Dict] = None) -> List[
         f"recommended energy and protein requirement for {activity or 'moderate'} activity {gender}",
     ]
 
-    if risk in ("elevated", "high") or (systolic and systolic >= 130) or (diastolic and diastolic >= 85):
+    if risk in ("intermediate", "high") or (systolic and systolic >= 130) or (diastolic and diastolic >= 85):
         queries += [
             "diet to prevent and control hypertension high blood pressure",
             "limit salt sodium intake and increase potassium rich foods",
@@ -182,7 +182,7 @@ Prefer culturally appropriate, locally available foods. Only suggest supplements
 User Health Data:
 {json.dumps(safe_health, indent=2)}
 
-ML Prediction Result:
+Cardiovascular Risk Assessment (Framingham 10-year CVD risk + ACC/AHA BP stage):
 {json.dumps(prediction, indent=2)}
 """
 

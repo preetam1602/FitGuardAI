@@ -30,6 +30,8 @@ class HealthRecord(BaseModel):
     physical_activity: str
     sleep_hours: float
     smoking_habit: bool
+    diabetes: bool = False
+    bp_medication: bool = False
     created_at: datetime
 
     @staticmethod
@@ -47,6 +49,8 @@ class HealthRecord(BaseModel):
             physical_activity=row["physical_activity"],
             sleep_hours=row["sleep_hours"],
             smoking_habit=row["smoking_habit"],
+            diabetes=row["diabetes"],
+            bp_medication=row["bp_medication"],
             created_at=row["created_at"],
         )
 
@@ -104,6 +108,10 @@ class FitGuardDAL:
                     created_at TIMESTAMP NOT NULL
                 );
 
+                -- Risk-equation inputs added after the first release
+                ALTER TABLE health_records ADD COLUMN IF NOT EXISTS diabetes BOOLEAN NOT NULL DEFAULT FALSE;
+                ALTER TABLE health_records ADD COLUMN IF NOT EXISTS bp_medication BOOLEAN NOT NULL DEFAULT FALSE;
+
                 CREATE TABLE IF NOT EXISTS diet_blueprints (
                     id SERIAL PRIMARY KEY,
                     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -150,7 +158,9 @@ class FitGuardDAL:
         heart_rate: int,
         physical_activity: str,
         sleep_hours: float,
-        smoking_habit: bool
+        smoking_habit: bool,
+        diabetes: bool = False,
+        bp_medication: bool = False
     ) -> int:
         async with self._pool.acquire() as conn:
             record_id = await conn.fetchval(
@@ -158,14 +168,14 @@ class FitGuardDAL:
                 INSERT INTO health_records (
                     user_id, age, gender, height_cm, weight_kg, bmi, 
                     blood_pressure, heart_rate, physical_activity, sleep_hours, 
-                    smoking_habit, created_at
+                    smoking_habit, diabetes, bp_medication, created_at
                 ) VALUES (
-                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
                 ) RETURNING id
                 """,
                 user_id, age, gender, height_cm, weight_kg, bmi,
                 blood_pressure, heart_rate, physical_activity, sleep_hours,
-                smoking_habit, datetime.utcnow()
+                smoking_habit, diabetes, bp_medication, datetime.utcnow()
             )
             return record_id
     

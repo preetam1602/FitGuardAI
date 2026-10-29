@@ -1,138 +1,58 @@
-# Health Recommendation API
+# Cardiovascular Risk Engine
 
-A FastAPI-based machine learning project that predicts blood pressure (`trestbps`) from health inputs and returns risk-based lifestyle recommendations.
+Estimates a user's 10-year cardiovascular disease risk and stages their blood pressure using
+published, validated clinical methods. There is no trained model: the same inputs always give the
+same, explainable result.
 
-## Project Structure
+| Output | Method |
+| --- | --- |
+| 10-year CVD risk (%) and category | Framingham general CVD risk, office-based BMI model. D'Agostino RB Sr et al., *Circulation* 2008;117:743-753 |
+| Heart age | Same paper: the age at which a person with optimal risk factors (SBP 125 untreated, BMI 22.5, non-smoker, non-diabetic) has the same risk |
+| Blood pressure stage | 2017 ACC/AHA guideline (Normal / Elevated / Stage 1 / Stage 2 / Hypertensive Crisis) |
+| Risk factor breakdown | Risk now minus risk with that factor at its optimal value (smoking, systolic BP, BMI) |
+
+Risk categories: **Low** < 10%, **Intermediate** 10-20%, **High** ≥ 20%. The headline `risk_level`
+is whichever is worse: the CVD category or the BP stage (Stage 2 or crisis counts as High).
+
+## Limits
+
+- Ages 19-74 are scored. The equation was derived on ages 30-74, so scores for 19-29 are an
+  extrapolation and carry a note saying so. Users over 74 are scored at 74 (likely an underestimate)
+  and flagged; under 19 gets BP staging only.
+- It is sex-specific, so no percentage is produced for other gender selections; BP staging still applies.
+- Heart rate, activity and sleep are not in the equation. They only shape the recommendations.
+- It is a screening estimate, not a diagnosis.
+
+## Layout
 
 ```
-model/
-├── app.py
-├── requirements.txt
-├── data/
-│   └── heart.csv
-├── models/
-├── notebooks/
-│   └── training.ipynb
-└── src/
-    ├── preprocess.py
-    ├── train.py
-    ├── predict.py
-    └── recommend.py
+src/
+├── risk.py        # Framingham equation, heart age, BP staging, factor breakdown
+└── recommend.py   # Guideline-based advice from the assessment + raw inputs
+app.py             # Optional standalone API (the main app uses these modules via backend/src/server.py)
 ```
 
-## Features
-
-- Trains a `LinearRegression` model on transformed heart-disease dataset features.
-- Saves trained artifacts:
-  - `models/model.pkl`
-  - `models/scaler.pkl`
-- Exposes REST API endpoints using FastAPI.
-- Returns BP risk category with practical recommendations:
-  - Normal
-  - Elevated
-  - High
-
-## Tech Stack
-
-- Python 3.9+
-- FastAPI
-- Uvicorn
-- Pandas
-- NumPy
-- Scikit-learn
-- Joblib
-
-## Setup
-
-1. Open terminal in the `model` folder.
-2. (Optional but recommended) Create and activate a virtual environment.
-3. Install dependencies:
-
-```bash
-pip install fastapi uvicorn pandas numpy scikit-learn joblib
-```
-
-> Note: `requirements.txt` is currently empty. You can populate it later with `pip freeze > requirements.txt`.
-
-## Train the Model
-
-Before running predictions, train and save the model/scaler:
-
-```bash
-python -m src.train
-```
-
-Expected output includes MAE, R2 score, and a confirmation that the model was saved.
-
-## Run the API
+## Standalone API
 
 ```bash
 uvicorn app:app --reload
 ```
 
-Server starts at:
+`POST /predict`
 
-- API root: `https://fitguardai.onrender.com/`
-- Swagger docs: `https://fitguardai.onrender.com/docs`
-
-## API Endpoints
-
-### `GET /`
-Health check endpoint.
-
-**Response**
 ```json
 {
-  "message": "Health Risk Prediction API Running"
+  "age": 50, "gender": "male", "height": 175, "weight": 80,
+  "bloodPressure": "135/85", "smokingHabit": "yes", "diabetes": "no", "bpMedication": "no",
+  "physicalActivity": "light", "sleepHours": 6, "heartRate": 78
 }
 ```
 
-### `POST /predict`
-Predicts blood pressure and returns risk + recommendations.
+The response includes `risk_level`, `cvd_risk_percent`, `cvd_category`, `heart_age`, `bmi`,
+`bp` (`systolic`, `diastolic`, `stage`, `urgent`), `risk_factors`, `recommendations`, `notes` and `model`.
 
-**Request Body**
-```json
-{
-  "age": 45,
-  "gender": 1,
-  "height": 172.5,
-  "weight": 78.0,
-  "bmi": 26.2,
-  "bloodPressure": 1,
-  "heartRate": 82,
-  "physicalActivity": 1,
-  "sleepHours": 7.0,
-  "smokingHabit": 0
-}
+## Tests
+
+```bash
+cd backend && python -m pytest tests
 ```
-
-**Response (example)**
-```json
-{
-  "predicted_bp": 132.4,
-  "risk_level": "Elevated",
-  "recommendations": [
-    "Reduce salt intake",
-    "Increase physical activity",
-    "Monitor blood pressure regularly"
-  ]
-}
-```
-
-## Input Field Notes
-
-- `gender`: `0 = Female`, `1 = Male`
-- `bloodPressure` category: `0 = Normal`, `1 = Elevated`, `2 = High`
-- `physicalActivity`: `0 = Low`, `1 = High`
-- `smokingHabit`: `0 = No`, `1 = Yes`
-
-## Common Issues
-
-- `FileNotFoundError` for model/scaler: run training first (`python -m src.train`).
-- Import errors: ensure dependencies are installed in the active Python environment.
-
-## Future Improvements
-
-- Add proper `requirements.txt` with pinned versions.
-- Add model evaluation report and validation metrics logging.
-- Add unit tests for preprocessing, prediction, and recommendation logic.

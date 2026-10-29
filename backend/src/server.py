@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from urllib.parse import urlparse, unquote
 
 from fastapi import FastAPI, HTTPException, status, Request, Depends
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field, field_validator
 import bcrypt
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -63,8 +63,15 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ML_PATH = os.path.join(BASE_DIR, "..", "health_recommendation", "src")
 sys.path.insert(0, ML_PATH)
 
-from predict import predict_bp
+from risk import assess_risk, parse_bp
 from recommend import get_recommendations
+
+
+def run_assessment(health_data: dict) -> dict:
+    """Framingham CVD risk + ACC/AHA BP staging + guideline advice for one set of inputs."""
+    assessment = assess_risk(health_data)
+    assessment["recommendations"] = get_recommendations(assessment, health_data)
+    return assessment
 
 # =========================
 # JWT UTILS
@@ -176,20 +183,30 @@ class LoginRequest(BaseModel):
     email: EmailStr
     password: str
 
-class HealthAssessmentRequest(BaseModel):
+class HealthInputs(BaseModel):
+    age: int = Field(ge=18, le=110)
+    gender: str
+    height: float = Field(ge=100, le=250)   # cm
+    weight: float = Field(ge=25, le=350)    # kg
+    bmi: float = 0                          # ignored for risk; recomputed from height/weight
+    bloodPressure: str
+    heartRate: int = Field(ge=30, le=220)
+    physicalActivity: str
+    sleepHours: float = Field(ge=0, le=24)
+    smokingHabit: str
+    diabetes: str = "no"
+    bpMedication: str = "no"
+
+    @field_validator("bloodPressure")
+    @classmethod
+    def _valid_bp(cls, value: str) -> str:
+        systolic, diastolic = parse_bp(value)
+        return f"{systolic}/{diastolic}"
+
+class HealthAssessmentRequest(HealthInputs):
     name: str
     email: EmailStr
     password: str
-    age: int
-    gender: str
-    height: float
-    weight: float
-    bmi: float
-    bloodPressure: str
-    heartRate: int
-    physicalActivity: str
-    sleepHours: float
-    smokingHabit: str
 
 class HealthAssessmentResponse(BaseModel):
     message: str
@@ -198,9 +215,16 @@ class HealthAssessmentResponse(BaseModel):
     access_token: Optional[str] = None
 
 class PredictionResponse(BaseModel):
-    predicted_bp: float
     risk_level: str
+    cvd_risk_percent: Optional[float] = None
+    cvd_category: Optional[str] = None
+    heart_age: Optional[int] = None
+    bmi: float
+    bp: dict
+    risk_factors: list
     recommendations: list
+    notes: list
+    model: dict
 
 # =========================
 # ROUTES
@@ -269,11 +293,9 @@ async def get_current_user_profile(current_user: dict = Depends(get_current_user
     }
 
 @app.post("/api/predict", response_model=PredictionResponse)
-async def get_prediction(payload: dict):
+async def get_prediction(payload: HealthInputs):
     try:
-        predicted_bp = predict_bp(payload)
-        prediction_result = get_recommendations(predicted_bp)
-        return PredictionResponse(**prediction_result)
+        return PredictionResponse(**run_assessment(payload.model_dump()))
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -284,11 +306,10 @@ async def get_prediction(payload: dict):
 async def submit_health_assessment(payload: HealthAssessmentRequest, request: Request):
     dal: FitGuardDAL = request.app.state.dal
     try:
-        input_data = payload.dict()
-        
-        # 1. Get ML Prediction
-        predicted_bp = predict_bp(input_data)
-        prediction_result = get_recommendations(predicted_bp)
+        input_data = payload.model_dump()
+
+        # 1. Risk assessment
+        prediction_result = run_assessment(input_data)
         
         # 2. Database save: ensure user exists and verify password
         user = await dal.get_user_by_email(payload.email)
@@ -308,12 +329,14 @@ async def submit_health_assessment(payload: HealthAssessmentRequest, request: Re
             gender=payload.gender,
             height_cm=payload.height,
             weight_kg=payload.weight,
-            bmi=payload.bmi,
+            bmi=prediction_result["bmi"],
             blood_pressure=payload.bloodPressure,
             heart_rate=payload.heartRate,
             physical_activity=payload.physicalActivity,
             sleep_hours=payload.sleepHours,
-            smoking_habit=smoking_bool
+            smoking_habit=smoking_bool,
+            diabetes=payload.diabetes.lower() in ("yes", "true"),
+            bp_medication=payload.bpMedication.lower() in ("yes", "true"),
         )
 
         # 3. Groq Diet Blueprint
@@ -351,25 +374,12 @@ async def submit_health_assessment(payload: HealthAssessmentRequest, request: Re
             detail=str(e)
         )
 
-class DietRecommendationRequest(BaseModel):
-    age: int
-    gender: str
-    height: float
-    weight: float
-    bmi: float
-    bloodPressure: str
-    heartRate: int
-    physicalActivity: str
-    sleepHours: float
-    smokingHabit: str
-
 @app.post("/api/diet/recommend")
-async def recommend_diet(payload: DietRecommendationRequest):
-    """ML prediction + RAG-grounded diet blueprint, without creating a user or saving records."""
-    input_data = payload.dict()
+async def recommend_diet(payload: HealthInputs):
+    """Risk assessment + RAG-grounded diet blueprint, without creating a user or saving records."""
+    input_data = payload.model_dump()
     try:
-        predicted_bp = predict_bp(input_data)
-        prediction_result = get_recommendations(predicted_bp)
+        prediction_result = run_assessment(input_data)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Prediction error: {str(e)}")
     try:

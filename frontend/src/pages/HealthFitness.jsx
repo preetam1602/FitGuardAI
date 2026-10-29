@@ -2,6 +2,20 @@ import { useState, useEffect } from 'react';
 import AuthModal from '../components/AuthModal';
 import { healthService } from '../services/health';
 
+const RISK_COLORS = {
+    Low: 'text-[var(--pulse)]',
+    Intermediate: 'text-[var(--info)]',
+    High: 'text-[var(--warn)]',
+};
+
+const BP_STAGE_COLORS = {
+    'Normal': 'text-[var(--pulse)]',
+    'Elevated': 'text-[var(--info)]',
+    'Stage 1 Hypertension': 'text-[var(--info)]',
+    'Stage 2 Hypertension': 'text-[var(--warn)]',
+    'Hypertensive Crisis': 'text-[#ff4d6d]',
+};
+
 function HealthFitness() {
     const [formData, setFormData] = useState({
         age: '',
@@ -12,7 +26,9 @@ function HealthFitness() {
         heartRate: '72',
         physicalActivity: '',
         sleepHours: '',
-        smokingHabit: ''
+        smokingHabit: '',
+        diabetes: '',
+        bpMedication: ''
     });
 
     const [bmi, setBmi] = useState('');
@@ -77,6 +93,8 @@ function HealthFitness() {
             physicalActivity: pendingHealthData.physicalActivity,
             sleepHours: parseFloat(pendingHealthData.sleepHours),
             smokingHabit: pendingHealthData.smokingHabit,
+            diabetes: pendingHealthData.diabetes,
+            bpMedication: pendingHealthData.bpMedication,
         };
 
         // Login/register already succeeded: close the modal now and show progress on the
@@ -117,6 +135,8 @@ function HealthFitness() {
                 physicalActivity: '',
                 sleepHours: '',
                 smokingHabit: '',
+                diabetes: '',
+                bpMedication: '',
             });
             setBmi('');
             setPendingHealthData(null);
@@ -158,7 +178,7 @@ function HealthFitness() {
                 <section className="w-full px-6 py-8 relative z-10">
                     <div className="max-w-4xl mx-auto">
                         <div className="bg-[var(--surface)] p-8 border border-[var(--pulse)] shadow-[0_0_20px_rgba(0,255,200,0.15)] relative overflow-hidden">
-                            <div className="absolute top-0 right-0 p-2 font-mono text-[8px] text-[var(--pulse)] opacity-50">CONFIDENCE: 94.2%</div>
+                            <div className="absolute top-0 right-0 p-2 font-mono text-[8px] text-[var(--pulse)] opacity-50">FRAMINGHAM 2008 · ACC/AHA 2017</div>
                             <h2 className="font-orbitron font-bold text-2xl text-[var(--pulse)] mb-6 tracking-wider">DIAGNOSTIC CORE ANALYSIS</h2>
                             
                             {/* Tabs */}
@@ -167,7 +187,7 @@ function HealthFitness() {
                                     className={`pb-3 px-4 font-orbitron text-xs md:text-sm uppercase tracking-widest transition-colors ${activeTab === 'bp' ? 'border-b-2 border-[var(--pulse)] text-[var(--pulse)]' : 'text-[var(--dim)] hover:text-[var(--white)]'}`}
                                     onClick={() => setActiveTab('bp')}
                                 >
-                                    BP Assessment
+                                    Risk Assessment
                                 </button>
                                 {dietBlueprint && (
                                     <button 
@@ -181,30 +201,74 @@ function HealthFitness() {
 
                             {activeTab === 'bp' && (
                                 <div className="animate-fade-in">
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-10">
-                                        {/* Predicted Blood Pressure */}
+                                    {/* Urgent BP warning */}
+                                    {prediction.bp?.urgent && (
+                                        <div className="mb-8 p-5 border-2 border-[#ff4d6d] bg-[rgba(255,77,109,0.1)] font-mono text-sm text-[var(--white)] flex items-start gap-3">
+                                            <span className="animate-blink text-[#ff4d6d] text-lg">⚠</span>
+                                            <span>{prediction.recommendations?.[0]}</span>
+                                        </div>
+                                    )}
+
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
+                                        {/* 10-year CVD Risk */}
                                         <div className="bg-[var(--panel)] p-6 border border-[var(--border)] relative group hover:border-[var(--pulse)] transition-colors">
-                                            <p className="text-[var(--dim)] text-[10px] uppercase tracking-[2px] mb-3">Predicted Systolic BP</p>
+                                            <p className="text-[var(--dim)] text-[10px] uppercase tracking-[2px] mb-3">10-Year Heart Risk</p>
                                             <div className="flex items-baseline gap-2">
-                                                <p className="text-4xl font-bold font-orbitron text-[var(--white)] group-hover:text-[var(--pulse)] transition-colors">{prediction.predicted_bp?.toFixed(1)}</p>
-                                                <p className="text-[var(--dim)] text-xs">mmHg</p>
+                                                <p className={`text-4xl font-bold font-orbitron ${RISK_COLORS[prediction.cvd_category] || 'text-[var(--white)]'}`}>
+                                                    {prediction.cvd_risk_percent != null ? prediction.cvd_risk_percent.toFixed(1) : '—'}
+                                                </p>
+                                                {prediction.cvd_risk_percent != null && <p className="text-[var(--dim)] text-xs">%</p>}
                                             </div>
-                                            <div className="absolute bottom-2 right-4 text-[var(--pulse)] opacity-10 font-orbitron text-4xl group-hover:opacity-20 transition-opacity">SYS</div>
+                                            <p className="text-[var(--dim)] text-[10px] uppercase tracking-[2px] mt-2">{prediction.cvd_category ? `${prediction.cvd_category} risk` : 'Not estimated'}</p>
                                         </div>
 
-                                        {/* Risk Level */}
+                                        {/* Blood Pressure Stage */}
                                         <div className="bg-[var(--panel)] p-6 border border-[var(--border)] relative group hover:border-[var(--pulse)] transition-colors">
-                                            <p className="text-[var(--dim)] text-[10px] uppercase tracking-[2px] mb-3">Health Risk Category</p>
-                                            <p className={`text-4xl font-bold font-orbitron ${
-                                                prediction.risk_level === 'Normal' ? 'text-[var(--pulse)]' :
-                                                prediction.risk_level === 'Elevated' ? 'text-[var(--info)]' :
-                                                'text-[var(--warn)]'
-                                            }`}>
-                                                {prediction.risk_level?.toUpperCase()}
-                                            </p>
-                                            <div className="absolute bottom-2 right-4 text-[var(--dim)] opacity-10 font-orbitron text-4xl group-hover:opacity-20 transition-opacity">RISK</div>
+                                            <p className="text-[var(--dim)] text-[10px] uppercase tracking-[2px] mb-3">Blood Pressure</p>
+                                            <div className="flex items-baseline gap-2">
+                                                <p className="text-4xl font-bold font-orbitron text-[var(--white)]">{prediction.bp?.systolic}/{prediction.bp?.diastolic}</p>
+                                                <p className="text-[var(--dim)] text-xs">mmHg</p>
+                                            </div>
+                                            <p className={`text-[10px] uppercase tracking-[2px] mt-2 ${BP_STAGE_COLORS[prediction.bp?.stage] || 'text-[var(--dim)]'}`}>{prediction.bp?.stage}</p>
+                                        </div>
+
+                                        {/* Heart Age */}
+                                        <div className="bg-[var(--panel)] p-6 border border-[var(--border)] relative group hover:border-[var(--pulse)] transition-colors">
+                                            <p className="text-[var(--dim)] text-[10px] uppercase tracking-[2px] mb-3">Heart Age</p>
+                                            <div className="flex items-baseline gap-2">
+                                                <p className="text-4xl font-bold font-orbitron text-[var(--white)] group-hover:text-[var(--pulse)] transition-colors">{prediction.heart_age ?? '—'}</p>
+                                                {prediction.heart_age != null && <p className="text-[var(--dim)] text-xs">years</p>}
+                                            </div>
+                                            <p className="text-[var(--dim)] text-[10px] uppercase tracking-[2px] mt-2">Overall: {prediction.risk_level}</p>
                                         </div>
                                     </div>
+
+                                    {/* What drives the risk */}
+                                    {prediction.risk_factors?.length > 0 && (
+                                        <div className="mb-10 bg-[var(--panel)] p-6 border border-[var(--border)]">
+                                            <h3 className="font-orbitron text-[10px] uppercase tracking-[4px] text-[var(--dim)] mb-5">Biggest Levers On Your Risk</h3>
+                                            <div className="space-y-4">
+                                                {prediction.risk_factors.map((f) => (
+                                                    <div key={f.factor} className="font-mono text-xs md:text-sm">
+                                                        <div className="flex justify-between gap-4 mb-2 text-[var(--text)]">
+                                                            <span>{f.action}</span>
+                                                            <span className="text-[var(--pulse)] whitespace-nowrap">−{f.risk_reduction_percent.toFixed(1)} pts</span>
+                                                        </div>
+                                                        <div className="h-[6px] bg-[var(--surface)]">
+                                                            <div className="h-full bg-[var(--pulse)]" style={{ width: `${Math.min(100, (f.risk_reduction_percent / prediction.cvd_risk_percent) * 100)}%` }}></div>
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {/* Model limits */}
+                                    {prediction.notes?.length > 0 && (
+                                        <ul className="mb-10 space-y-2 font-mono text-[11px] text-[var(--dim)]">
+                                            {prediction.notes.map((note, idx) => <li key={idx}>ⓘ {note}</li>)}
+                                        </ul>
+                                    )}
 
                                     {/* Recommendations */}
                                     {prediction.recommendations && prediction.recommendations.length > 0 && (
@@ -224,6 +288,11 @@ function HealthFitness() {
                                             </div>
                                         </div>
                                     )}
+
+                                    <p className="mt-8 font-mono text-[10px] text-[var(--dim)] leading-relaxed">
+                                        Screening estimate from the {prediction.model?.name} ({prediction.model?.reference}) and the {prediction.model?.bp_reference}.
+                                        It is not a diagnosis. Talk to a doctor about your results.
+                                    </p>
                                 </div>
                             )}
 
@@ -347,6 +416,8 @@ function HealthFitness() {
                                 { name: "physicalActivity", label: "Activity Level", type: "select", options: ["Sedentary", "Light", "Moderate", "Active", "Very Active"] },
                                 { name: "sleepHours", label: "Sleep Duration", type: "number", step: "0.5", placeholder: "HOURS" },
                                 { name: "smokingHabit", label: "Smoking Habit", type: "select", options: ["No", "Yes"] },
+                                { name: "diabetes", label: "Diagnosed Diabetes", type: "select", options: ["No", "Yes"] },
+                                { name: "bpMedication", label: "Taking BP Medication", type: "select", options: ["No", "Yes"] },
                             ].map((field) => (
                                 <div key={field.name} className="flex flex-col gap-2">
                                     <label className="text-[8px] uppercase tracking-[3px] text-[var(--dim)] font-orbitron">
